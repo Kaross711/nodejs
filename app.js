@@ -1,4 +1,4 @@
-// server.js - Complete Verbeterde Railway Backend voor Video Processing
+// server.js - Complete Bulletproof Railway Backend voor Video Processing
 const express = require('express');
 const cors = require('cors');
 const { exec } = require('child_process');
@@ -16,7 +16,7 @@ app.use(express.json());
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Video processing server is running' });
+  res.json({ status: 'OK', message: 'Bulletproof video processing server is running' });
 });
 
 // Main video processing endpoint
@@ -45,18 +45,16 @@ app.post('/process-video', async (req, res) => {
     console.log('Transcription completed, length:', transcription.length);
     console.log('Transcription preview:', transcription.substring(0, 200) + '...');
 
-    // Step 4: NEW 3-STEP AI PROCESS
-    console.log('Starting 3-step AI processing...');
+    // Step 4: Initial content analysis
+    console.log('Starting bulletproof AI processing...');
+    const initialAnalysis = await analyzeContentType(transcription, videoInfo);
+    console.log('Initial analysis:', initialAnalysis);
     
-    // STEP 4A: Analyze content type (supports multiple languages)
-    const contentAnalysis = await analyzeContentType(transcription, videoInfo);
-    console.log('Content analysis:', contentAnalysis);
-    
-    // STEP 4B: Generate specialized summary based on content type
-    const summary = await generateSpecializedSummary(transcription, videoInfo, contentAnalysis);
-    console.log('Specialized summary generated for type:', contentAnalysis.contentType);
+    // Step 5: BULLETPROOF PROCESSING - 3-layer system
+    const summary = await generateSpecializedSummary(transcription, videoInfo, initialAnalysis);
+    console.log('Bulletproof summary generated');
 
-    // Step 5: Cleanup temp files
+    // Step 6: Cleanup temp files
     if (fs.existsSync(audioPath)) {
       fs.unlinkSync(audioPath);
     }
@@ -67,8 +65,9 @@ app.post('/process-video', async (req, res) => {
         videoInfo,
         transcription,
         summary,
-        contentAnalysis, // Include analysis for debugging
-        wordCount: transcription.split(' ').length
+        contentAnalysis: summary.contentAnalysis || initialAnalysis,
+        wordCount: transcription.split(' ').length,
+        processingMethod: summary.processingMethod || 'bulletproof'
       }
     });
 
@@ -159,7 +158,7 @@ async function transcribeAudio(audioPath) {
     const formData = new FormData();
     formData.append('file', fs.createReadStream(audioPath));
     formData.append('model', 'whisper-1');
-    // REMOVED: formData.append('language', 'en'); // Now auto-detects language!
+    // AUTO-DETECT LANGUAGE - no language parameter
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
@@ -184,7 +183,7 @@ async function transcribeAudio(audioPath) {
   }
 }
 
-// NEW: STEP 1 - Analyze content type (MULTILINGUAL SUPPORT)
+// Initial content analysis
 async function analyzeContentType(transcription, videoInfo) {
   const openaiApiKey = process.env.OPENAI_API_KEY;
   
@@ -192,60 +191,26 @@ async function analyzeContentType(transcription, videoInfo) {
     throw new Error('OPENAI_API_KEY environment variable not set');
   }
 
-  const analysisPrompt = `You are an expert content analyst who understands multiple languages. Analyze this video transcript and determine exactly what type of content this is.
+  const analysisPrompt = `You are an expert content analyst. Analyze this video transcript and determine the content type.
 
 Video Title: "${videoInfo.title}"
-Video Duration: ${videoInfo.duration ? Math.round(videoInfo.duration / 60) + ' minutes' : 'Unknown'}
-Uploader: ${videoInfo.uploader || 'Unknown'}
+Duration: ${videoInfo.duration ? Math.round(videoInfo.duration / 60) + ' minutes' : 'Unknown'}
 
-FULL TRANSCRIPT (may be in Dutch, English, or other languages):
+TRANSCRIPT:
 ${transcription}
 
-IMPORTANT: 
-- The transcript may be in Dutch, English, or other languages - analyze it regardless of language
-- Focus on the ACTUAL CONTENT being discussed, not the language
-- If you see Dutch words like "SEO", "AI", "effectief", "tools" - understand the context
-
-Based on the ACTUAL CONTENT being discussed, determine:
-
-1. CONTENT TYPE - Choose the most accurate one:
-   - recipe: Cooking/baking instructions with ingredients and steps
-   - tutorial: Step-by-step instructions to learn/build something (like SEO, AI tools, tech)
-   - tips: Advice, life hacks, recommendations, optimization techniques
-   - review: Product/service evaluation with pros/cons
-   - fitness: Workout routines, exercises, health advice
-   - story: Personal stories, experiences, entertainment
-   - news: Current events, updates, reporting
-   - educational: Teaching concepts, explaining topics
-   - entertainment: Comedy, memes, fun content
-   - business: Marketing, SEO, business advice, strategies
-   - tech: Technology tutorials, software guides, AI tools
-   - other: Anything else
-
-2. SUB-CATEGORY - Be very specific about what's being taught/discussed
-
-3. KEY ELEMENTS - What are the main things discussed?
-
-Respond ONLY with valid JSON (respond in English even if input is Dutch):
+Analyze the ACTUAL CONTENT and respond with JSON:
 {
-  "contentType": "exact_type_from_list_above",
-  "subCategory": "very_specific_description_of_what_is_taught",
+  "contentType": "recipe|tutorial|tips|review|fitness|business|educational|story|tech|other",
+  "subCategory": "specific_description",
   "keyElements": ["element1", "element2", "element3"],
   "targetAudience": "beginner|intermediate|advanced|general",
-  "primaryFocus": "main_focus_of_content", 
+  "primaryFocus": "main_focus",
   "hasActionableSteps": true|false,
   "estimatedComplexity": "simple|moderate|complex",
-  "presentationStyle": "how_this_should_be_formatted",
-  "language": "detected_language_of_content",
-  "mainTopics": ["list", "of", "main", "topics", "discussed"]
-}
-
-Examples for context:
-- If discussing SEO tools and AI → contentType: "tutorial" or "business"
-- If showing step-by-step software usage → contentType: "tutorial" 
-- If giving marketing advice → contentType: "tips" or "business"
-
-Be accurate and specific based on what is ACTUALLY being said in the transcript, regardless of language.`;
+  "language": "detected_language",
+  "mainTopics": ["topic1", "topic2"]
+}`;
 
   try {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -259,14 +224,14 @@ Be accurate and specific based on what is ACTUALLY being said in the transcript,
         messages: [
           {
             role: 'system',
-            content: 'You are an expert multilingual content analyzer. You understand Dutch, English, and other languages. Always respond with valid JSON only. Be precise and accurate regardless of input language.'
+            content: 'You are an expert multilingual content analyzer. Always respond with valid JSON only.'
           },
           {
             role: 'user', 
             content: analysisPrompt
           }
         ],
-        max_tokens: 600,
+        max_tokens: 500,
         temperature: 0.1
       })
     });
@@ -279,22 +244,19 @@ Be accurate and specific based on what is ACTUALLY being said in the transcript,
     
     try {
       const analysis = JSON.parse(result.choices[0].message.content);
-      console.log('Multilingual content analysis result:', analysis);
       return analysis;
     } catch (parseError) {
-      console.error('Failed to parse analysis JSON:', result.choices[0].message.content);
-      // Fallback voor SEO/business content
+      console.error('Failed to parse analysis JSON');
       return {
-        contentType: 'tutorial',
-        subCategory: 'SEO and AI tools',
-        keyElements: ['SEO optimization', 'AI tools', 'digital marketing'],
-        targetAudience: 'intermediate',
-        primaryFocus: videoInfo.title || 'business tutorial',
-        hasActionableSteps: true,
-        estimatedComplexity: 'moderate',
-        presentationStyle: 'step-by-step tutorial',
-        language: 'dutch',
-        mainTopics: ['SEO', 'AI', 'business']
+        contentType: 'other',
+        subCategory: 'general content',
+        keyElements: ['video content'],
+        targetAudience: 'general',
+        primaryFocus: videoInfo.title || 'video content',
+        hasActionableSteps: false,
+        estimatedComplexity: 'simple',
+        language: 'unknown',
+        mainTopics: ['general']
       };
     }
   } catch (error) {
@@ -303,7 +265,7 @@ Be accurate and specific based on what is ACTUALLY being said in the transcript,
   }
 }
 
-// NEW: STEP 2 - Generate specialized content based on analysis
+// BULLETPROOF SPECIALIZED SUMMARY GENERATION
 async function generateSpecializedSummary(transcription, videoInfo, analysis) {
   const openaiApiKey = process.env.OPENAI_API_KEY;
   
@@ -311,40 +273,419 @@ async function generateSpecializedSummary(transcription, videoInfo, analysis) {
     throw new Error('OPENAI_API_KEY environment variable not set');
   }
 
-  // Create specialized prompt based on content type
-  let specializedPrompt = '';
-  
-  switch (analysis.contentType) {
-    case 'tips':
-      specializedPrompt = createAdvancedTipsPrompt(transcription, videoInfo, analysis);
-      break;
-    case 'recipe':
-      specializedPrompt = createAdvancedRecipePrompt(transcription, videoInfo, analysis);
-      break;
-    case 'tutorial':
-      specializedPrompt = createAdvancedTutorialPrompt(transcription, videoInfo, analysis);
-      break;
-    case 'business':
-      specializedPrompt = createBusinessPrompt(transcription, videoInfo, analysis);
-      break;
-    case 'review':
-      specializedPrompt = createAdvancedReviewPrompt(transcription, videoInfo, analysis);
-      break;
-    case 'fitness':
-      specializedPrompt = createAdvancedFitnessPrompt(transcription, videoInfo, analysis);
-      break;
-    case 'story':
-      specializedPrompt = createStoryPrompt(transcription, videoInfo, analysis);
-      break;
-    case 'educational':
-      specializedPrompt = createEducationalPrompt(transcription, videoInfo, analysis);
-      break;
-    case 'tech':
-      specializedPrompt = createTechPrompt(transcription, videoInfo, analysis);
-      break;
-    default:
-      specializedPrompt = createAdvancedGeneralPrompt(transcription, videoInfo, analysis);
+  console.log('Starting bulletproof processing for:', analysis.contentType);
+
+  try {
+    // STEP 1: Enhanced Content Re-Analysis with Better Context
+    const enhancedAnalysis = await deepContentAnalysis(transcription, videoInfo, analysis, openaiApiKey);
+    console.log('Enhanced analysis:', enhancedAnalysis);
+
+    // STEP 2: Generate Comprehensive Summary using Enhanced Context
+    const comprehensiveSummary = await generateBulletproofSummary(transcription, videoInfo, enhancedAnalysis, openaiApiKey);
+    console.log('Comprehensive summary generated');
+
+    // STEP 3: Quality Check & Enhancement
+    const finalSummary = await enhanceAndValidateSummary(comprehensiveSummary, enhancedAnalysis, openaiApiKey);
+    
+    return {
+      ...finalSummary,
+      contentAnalysis: enhancedAnalysis,
+      processingMethod: 'bulletproof'
+    };
+
+  } catch (error) {
+    console.error('Bulletproof processing failed, using fallback:', error);
+    return await generateFallbackSummary(transcription, videoInfo, analysis, openaiApiKey);
   }
+}
+
+// STEP 1: Deep Content Analysis - Verstaat ALLES
+async function deepContentAnalysis(transcription, videoInfo, initialAnalysis, openaiApiKey) {
+  const deepAnalysisPrompt = `You are the world's most advanced content analyst. Analyze this video transcript with extreme precision and understanding.
+
+CONTEXT:
+Video Title: "${videoInfo.title}"
+Duration: ${videoInfo.duration ? Math.round(videoInfo.duration / 60) + ' minutes' : 'Unknown'}
+Initial Analysis: ${JSON.stringify(initialAnalysis)}
+
+COMPLETE TRANSCRIPT:
+${transcription}
+
+ANALYSIS INSTRUCTIONS:
+1. LANGUAGE DETECTION: Identify exact language (Dutch, English, mix)
+2. CULTURAL CONTEXT: Understand regional terms, slang, colloquialisms
+3. TOOL/WEBSITE RECOGNITION: Extract exact names mentioned, even if mispronounced
+4. CONTENT INTENT: What is the creator really trying to teach/share?
+5. AUDIENCE ANALYSIS: Who is this content for? 
+6. ACTION ITEMS: What specific actions should viewers take?
+7. VALUE PROPOSITION: What problem does this solve?
+
+ADVANCED RECOGNITION:
+- Dutch marketing terms: "effectief", "optimalisatie", "strategie", "tools", "gratis", "betaald"
+- Tool name variations: "ChatGPT" = "Chat GPT", "Chattypt", "Chat-gpt"
+- Website phonetics: "Kwetter" might be "Twitter", unclear audio = describe function
+- Business concepts: SEO, conversion, engagement, traffic, ranking
+
+Respond with enhanced JSON:
+{
+  "contentType": "most_accurate_primary_type",
+  "secondaryType": "alternative_classification_if_hybrid",
+  "subCategory": "ultra_specific_description", 
+  "exactLanguage": "primary_language_detected",
+  "culturalContext": "regional_or_platform_specific_context",
+  "primaryIntent": "what_creator_wants_to_achieve",
+  "audienceLevel": "beginner|intermediate|advanced|mixed",
+  "toolsMentioned": [
+    {
+      "heardAs": "exact_audio_as_heard", 
+      "likelyActual": "probable_real_name",
+      "function": "what_this_tool_does",
+      "confidence": "high|medium|low"
+    }
+  ],
+  "keyTopics": ["all_main_subjects_discussed"],
+  "actionableElements": ["concrete_things_viewers_can_do"],
+  "complexityFactors": ["what_makes_this_content_challenging"],
+  "structureType": "how_this_should_be_organized",
+  "missingElements": ["what_info_might_be_unclear_or_missing"],
+  "contextClues": ["additional_hints_about_content"]
+}
+
+Be extremely thorough and understanding. Recognize that speakers may:
+- Mispronounce tool names
+- Mix languages 
+- Use regional slang
+- Speak unclearly on certain words
+- Reference tools without full context`;
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${openaiApiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an expert multilingual content analyst with deep understanding of digital marketing, technology, and cultural nuances. You excel at extracting meaning from unclear audio and mixed-language content.'
+        },
+        {
+          role: 'user', 
+          content: deepAnalysisPrompt
+        }
+      ],
+      max_tokens: 800,
+      temperature: 0.1
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Deep analysis failed: ${response.status}`);
+  }
+
+  const result = await response.json();
+  
+  try {
+    return JSON.parse(result.choices[0].message.content);
+  } catch (parseError) {
+    console.error('Failed to parse deep analysis:', result.choices[0].message.content);
+    return initialAnalysis; // Fallback to original
+  }
+}
+
+// STEP 2: Bulletproof Summary Generation
+async function generateBulletproofSummary(transcription, videoInfo, enhancedAnalysis, openaiApiKey) {
+  const bulletproofPrompt = `Create the most comprehensive, actionable summary possible for this ${enhancedAnalysis.exactLanguage} video about ${enhancedAnalysis.subCategory}.
+
+ENHANCED CONTEXT:
+${JSON.stringify(enhancedAnalysis, null, 2)}
+
+VIDEO DETAILS:
+Title: "${videoInfo.title}"
+Duration: ${videoInfo.duration ? Math.round(videoInfo.duration / 60) + ' minutes' : 'Unknown'}
+
+COMPLETE TRANSCRIPT:
+${transcription}
+
+BULLETPROOF PROCESSING RULES:
+1. EXTRACT EVERYTHING: Every tool, step, tip, warning, example mentioned
+2. CLARIFY UNCLEAR ELEMENTS: If tool name is unclear, describe its function
+3. LOGICAL STRUCTURE: Organize content in the most logical, actionable way
+4. FILL GAPS: Use industry knowledge to complete incomplete information
+5. PRACTICAL FOCUS: Make everything immediately actionable
+6. ERROR CORRECTION: Fix obvious misspellings/mishearings based on context
+
+CREATE ADAPTIVE STRUCTURE based on content type:
+
+FOR BUSINESS/MARKETING CONTENT:
+{
+  "title": "Clear actionable title in English",
+  "summary": "What business goal this achieves and why it matters",
+  "targetOutcome": "specific result viewers will achieve",
+  "difficulty": "Beginner|Intermediate|Advanced",
+  "timeToImplement": "realistic time estimate",
+  "requiredTools": [
+    {
+      "toolName": "best_guess_at_actual_name (heard as: 'audio_version')",
+      "function": "what_this_tool_does_specifically", 
+      "cost": "Free|Paid|Freemium|Unknown",
+      "alternatives": "similar_tools_that_do_same_thing",
+      "criticalness": "Essential|Helpful|Optional"
+    }
+  ],
+  "implementationSteps": [
+    {
+      "phase": "logical_phase_name",
+      "objective": "what_this_phase_accomplishes",
+      "actions": [
+        {
+          "action": "specific_actionable_step",
+          "details": "exactly_how_to_do_this",
+          "tools": ["tools_needed_for_this_step"],
+          "timeEstimate": "how_long_this_takes",
+          "successMetrics": "how_to_know_you_did_it_right",
+          "commonIssues": "what_typically_goes_wrong",
+          "troubleshooting": "how_to_fix_problems"
+        }
+      ]
+    }
+  ],
+  "strategicContext": {
+    "whyThisMatters": "business_importance",
+    "whenToUse": "optimal_timing_or_situations", 
+    "targetAudience": "who_should_do_this",
+    "expectedResults": "what_outcomes_to_expect",
+    "advancedTips": ["expert_level_optimizations"]
+  },
+  "qualityChecklist": ["how_to_verify_success"],
+  "nextSteps": ["what_to_do_after_completing_this"],
+  "resources": ["additional_learning_materials"],
+  "category": "${enhancedAnalysis.contentType}",
+  "tags": ["${enhancedAnalysis.keyTopics?.join('", "')}"],
+  "estimated_read_time": 8
+}
+
+FOR TUTORIAL CONTENT:
+{
+  "title": "Step-by-step guide title",
+  "objective": "what_you_will_build_or_learn",
+  "difficulty": "Beginner|Intermediate|Advanced",
+  "totalTime": "complete_time_estimate",
+  "prerequisites": ["required_knowledge_or_setup"],
+  "materialsAndTools": [
+    {
+      "item": "exact_item_needed",
+      "purpose": "why_you_need_this",
+      "where_to_get": "source_or_alternative",
+      "cost": "price_range_if_mentioned"
+    }
+  ],
+  "detailedSteps": [
+    {
+      "stepNumber": 1,
+      "title": "descriptive_step_name",
+      "objective": "what_this_step_accomplishes",
+      "instructions": "detailed_how_to_instructions",
+      "duration": "time_for_this_step",
+      "tools": ["specific_tools_for_this_step"],
+      "visualCues": "what_you_should_see",
+      "qualityCheck": "how_to_verify_correct_completion",
+      "troubleshooting": [
+        {
+          "problem": "common_issue",
+          "solution": "how_to_fix",
+          "prevention": "how_to_avoid"
+        }
+      ],
+      "tips": ["optimization_advice"],
+      "warnings": ["important_safety_or_caution_notes"]
+    }
+  ],
+  "finalValidation": "how_to_test_final_result",
+  "variations": ["different_approaches_or_modifications"],
+  "maintenance": "ongoing_care_or_updates_needed",
+  "category": "Tutorial",
+  "estimated_read_time": 10
+}
+
+FOR TIPS/ADVICE CONTENT:
+{
+  "title": "Comprehensive advice guide",
+  "focus": "main_improvement_area", 
+  "applicability": "who_this_helps_most",
+  "tips": [
+    {
+      "tip": "clear_tip_name",
+      "description": "what_this_tip_involves",
+      "implementation": {
+        "immediate_actions": ["things_to_do_right_now"],
+        "setup_required": ["one_time_preparations"], 
+        "ongoing_habits": ["behaviors_to_maintain"]
+      },
+      "science": "why_this_works_psychologically_or_technically",
+      "difficulty": "Easy|Medium|Hard",
+      "timeInvestment": "how_much_time_this_requires",
+      "expectedResults": {
+        "immediate": "what_happens_right_away",
+        "short_term": "results_within_days_or_weeks", 
+        "long_term": "lasting_benefits"
+      },
+      "measurements": "how_to_track_progress",
+      "troubleshooting": "what_to_do_if_it_doesnt_work",
+      "advanced": "ways_to_optimize_further"
+    }
+  ],
+  "implementation_strategy": "best_order_to_try_these_tips",
+  "success_indicators": "how_to_know_its_working",
+  "category": "Tips",
+  "estimated_read_time": 6
+}
+
+CRITICAL INSTRUCTIONS:
+- If transcript is unclear, use context clues and industry knowledge
+- For unclear tool names, provide best guess + function description
+- Make every element actionable and specific
+- Include realistic time estimates based on content complexity
+- Add troubleshooting for predictable problems
+- Structure for immediate usability
+
+Translate Dutch content to English but preserve specific tool/brand names as heard.`;
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${openaiApiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an expert content processor who creates the most comprehensive, actionable summaries possible. You understand business, technical, and practical content across multiple languages and can fill in gaps with industry expertise.'
+        },
+        {
+          role: 'user', 
+          content: bulletproofPrompt
+        }
+      ],
+      max_tokens: 3500,
+      temperature: 0.2
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Bulletproof summary failed: ${response.status}`);
+  }
+
+  const result = await response.json();
+  
+  try {
+    return JSON.parse(result.choices[0].message.content);
+  } catch (parseError) {
+    console.error('Failed to parse bulletproof summary:', result.choices[0].message.content);
+    throw new Error('Summary parsing failed');
+  }
+}
+
+// STEP 3: Quality Enhancement & Validation
+async function enhanceAndValidateSummary(summary, analysis, openaiApiKey) {
+  const enhancementPrompt = `Review and enhance this summary for maximum clarity and completeness.
+
+ORIGINAL ANALYSIS:
+${JSON.stringify(analysis, null, 2)}
+
+GENERATED SUMMARY:
+${JSON.stringify(summary, null, 2)}
+
+ENHANCEMENT TASKS:
+1. COMPLETENESS CHECK: Are all mentioned elements included?
+2. CLARITY IMPROVEMENT: Can instructions be clearer?
+3. TOOL VERIFICATION: Do tool names make sense in context?
+4. LOGICAL FLOW: Is the structure optimal for users?
+5. PRACTICAL VALIDATION: Are time estimates realistic?
+6. GAP FILLING: Add any missing critical information
+
+Return the enhanced summary in the same JSON format, but improved:
+- Clearer instructions
+- Better tool name guesses based on function
+- More realistic estimates  
+- Additional helpful context
+- Improved organization
+
+Only return the JSON, no other text.`;
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${openaiApiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a quality assurance specialist who perfects content summaries for maximum user value.'
+        },
+        {
+          role: 'user', 
+          content: enhancementPrompt
+        }
+      ],
+      max_tokens: 2000,
+      temperature: 0.1
+    })
+  });
+
+  if (!response.ok) {
+    console.error('Enhancement failed, returning original summary');
+    return summary;
+  }
+
+  const result = await response.json();
+  
+  try {
+    const enhanced = JSON.parse(result.choices[0].message.content);
+    console.log('Summary enhanced successfully');
+    return enhanced;
+  } catch (parseError) {
+    console.error('Enhancement parsing failed, returning original');
+    return summary;
+  }
+}
+
+// FALLBACK: Last resort comprehensive summary
+async function generateFallbackSummary(transcription, videoInfo, analysis, openaiApiKey) {
+  console.log('Using fallback summary generation');
+  
+  const fallbackPrompt = `Extract maximum value from this video transcript, even if some elements are unclear.
+
+Video: "${videoInfo.title}"
+Type: ${analysis.contentType}
+
+TRANSCRIPT:
+${transcription}
+
+Create the most helpful summary possible:
+{
+  "title": "Descriptive title based on content",
+  "summary": "What this content covers and its value",
+  "keyPoints": [
+    {"point": "main_topic", "details": "explanation", "action": "what_to_do"}
+  ],
+  "toolsOrResources": [
+    {"name": "tool_or_resource_mentioned", "purpose": "what_its_for"}
+  ],
+  "actionableSteps": ["things_viewer_can_actually_do"],
+  "importantNotes": ["key_warnings_or_tips"],
+  "category": "${analysis.contentType}",
+  "estimated_read_time": 5
+}
+
+Focus on practical value even if some details are unclear.`;
 
   try {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -357,388 +698,36 @@ async function generateSpecializedSummary(transcription, videoInfo, analysis) {
         model: 'gpt-4o-mini',
         messages: [
           {
-            role: 'system',
-            content: `You are an expert content processor who understands multiple languages. Create comprehensive, detailed, and actionable content summaries. Always respond with valid JSON only. Extract ALL relevant details from the transcript. If input is in Dutch, translate key information to English in your response.`
-          },
-          {
             role: 'user', 
-            content: specializedPrompt
+            content: fallbackPrompt
           }
         ],
-        max_tokens: 2500,
-        temperature: 0.2
+        max_tokens: 1500,
+        temperature: 0.3
       })
     });
 
     if (!response.ok) {
-      throw new Error(`Specialized summary failed: ${response.status}`);
+      throw new Error('Fallback also failed');
     }
 
     const result = await response.json();
+    return JSON.parse(result.choices[0].message.content);
     
-    try {
-      const summary = JSON.parse(result.choices[0].message.content);
-      return {
-        ...summary,
-        contentAnalysis: analysis // Include original analysis
-      };
-    } catch (parseError) {
-      console.error('Failed to parse specialized summary:', result.choices[0].message.content);
-      return createFallbackSummary(videoInfo, analysis);
-    }
   } catch (error) {
-    console.error('Specialized summary error:', error);
-    throw error;
+    console.error('All processing failed:', error);
+    return {
+      title: videoInfo.title || 'Video Summary',
+      summary: 'Content processing encountered difficulties',
+      category: analysis.contentType,
+      processingNote: 'This video required manual review',
+      estimated_read_time: 3
+    };
   }
 }
 
-// ADVANCED TIPS PROMPT - Voor sleep tips, life hacks, etc.
-function createAdvancedTipsPrompt(transcription, videoInfo, analysis) {
-  return `Extract and structure ALL tips from this ${analysis.language || 'multilingual'} video about ${analysis.subCategory}.
-
-Video: "${videoInfo.title}"
-Focus: ${analysis.primaryFocus}
-Language: ${analysis.language || 'unknown'}
-
-COMPLETE TRANSCRIPT:
-${transcription}
-
-Create a comprehensive JSON response with EVERY tip mentioned (translate to English if needed):
-
-{
-  "title": "Clear descriptive title in English",
-  "summary": "What this video helps you achieve",
-  "targetArea": "${analysis.subCategory}",
-  "tips": [
-    {
-      "tip": "Clear tip title/name in English",
-      "explanation": "Detailed explanation of what to do",
-      "whyItWorks": "Scientific/logical reasoning why this works",
-      "howToImplement": "Step-by-step how to actually do this",
-      "timeToSeeResults": "When you'll notice improvements",
-      "difficulty": "Easy|Medium|Hard",
-      "commonMistakes": "What people typically do wrong",
-      "additionalNotes": "Any extra context or warnings"
-    }
-  ],
-  "implementationPlan": "Suggested order to try these tips",
-  "measuringSuccess": "How to know if the tips are working",
-  "relatedTopics": ["connected areas or additional resources"],
-  "category": "Tips",
-  "tags": ["${analysis.subCategory}", "improvement", "lifestyle"],
-  "estimated_read_time": 5
-}
-
-IMPORTANT: Extract EVERY single tip mentioned. Translate Dutch content to clear English. Don't summarize - be comprehensive and detailed.`;
-}
-
-// ADVANCED TUTORIAL PROMPT - Voor SEO, tech, business tutorials
-function createAdvancedTutorialPrompt(transcription, videoInfo, analysis) {
-  return `Extract complete tutorial instructions from this ${analysis.language || 'multilingual'} instructional video about ${analysis.subCategory}.
-
-Video: "${videoInfo.title}"
-Type: ${analysis.subCategory}
-Main Topics: ${analysis.mainTopics?.join(', ') || 'tutorial content'}
-Language: ${analysis.language || 'unknown'}
-
-COMPLETE TRANSCRIPT:
-${transcription}
-
-Create detailed tutorial structure (translate to English if needed):
-
-{
-  "title": "Clear tutorial title in English",
-  "summary": "What you'll learn and accomplish from this tutorial",
-  "difficulty": "Beginner|Intermediate|Advanced", 
-  "timeRequired": "estimated time to implement these techniques",
-  "toolsNeeded": [
-    {"tool": "software/platform name", "required": true|false, "alternatives": "if mentioned", "cost": "free/paid if mentioned"}
-  ],
-  "prerequisites": ["skills or knowledge needed beforehand"],
-  "steps": [
-    {
-      "step": 1, 
-      "title": "step name in English", 
-      "instruction": "detailed instruction translated to English", 
-      "timeEstimate": "duration if mentioned", 
-      "commonMistakes": "what to avoid", 
-      "successTips": "how to do it right", 
-      "visualCues": "what to look for",
-      "tools": ["specific tools used in this step"]
-    }
-  ],
-  "troubleshooting": [
-    {"problem": "common issue mentioned", "solution": "how to fix it"}
-  ],
-  "expectedResults": "what outcomes you should see",
-  "nextSteps": ["what to do after completing this tutorial"],
-  "additionalResources": ["websites, tools, or concepts mentioned"],
-  "category": "Tutorial", 
-  "tags": ["${analysis.mainTopics?.join('", "') || 'tutorial'}"],
-  "estimated_read_time": 8
-}
-
-IMPORTANT: 
-- Extract ALL steps, tools, and techniques mentioned
-- Translate Dutch content to clear English instructions
-- Include all software/tools/platforms mentioned
-- Focus on actionable, implementable steps`;
-}
-
-// BUSINESS PROMPT - Voor SEO, marketing, business advice
-function createBusinessPrompt(transcription, videoInfo, analysis) {
-  return `Extract business advice and strategies from this ${analysis.language || 'multilingual'} business video about ${analysis.subCategory}.
-
-Video: "${videoInfo.title}"
-Focus: ${analysis.subCategory}
-Topics: ${analysis.mainTopics?.join(', ') || 'business'}
-
-COMPLETE TRANSCRIPT:
-${transcription}
-
-Create comprehensive business strategy guide (translate to English if needed):
-
-{
-  "title": "Business strategy/advice title in English",
-  "summary": "What business goal this helps achieve",
-  "targetArea": "${analysis.subCategory}",
-  "strategies": [
-    {
-      "strategy": "strategy name in English",
-      "explanation": "what this strategy involves",
-      "implementation": "step-by-step how to implement this",
-      "benefits": "expected outcomes and results",
-      "difficulty": "Easy|Medium|Hard",
-      "timeframe": "how long to see results",
-      "tools": ["tools or platforms needed"],
-      "metrics": "how to measure success",
-      "examples": "specific examples mentioned"
-    }
-  ],
-  "actionPlan": "step-by-step implementation guide",
-  "commonPitfalls": ["mistakes to avoid"],
-  "successMetrics": ["how to track progress"],
-  "resources": ["tools, websites, or platforms mentioned"],
-  "category": "Business",
-  "tags": ["${analysis.subCategory}", "strategy", "marketing"],
-  "estimated_read_time": 7
-}
-
-Extract ALL strategies, tools, and actionable advice mentioned.`;
-}
-
-// RECIPE PROMPT
-function createAdvancedRecipePrompt(transcription, videoInfo, analysis) {
-  return `Extract complete recipe details from this cooking video.
-
-Video: "${videoInfo.title}"
-Type: ${analysis.subCategory}
-
-COMPLETE TRANSCRIPT:
-${transcription}
-
-Extract EVERY ingredient, step, and cooking detail mentioned:
-
-{
-  "title": "Recipe name",
-  "summary": "Description of the dish",
-  "servings": "number mentioned or estimated",
-  "totalTime": "total cooking time mentioned",
-  "difficulty": "Easy|Medium|Hard",
-  "ingredients": [
-    {"item": "ingredient name", "amount": "exact quantity mentioned", "notes": "prep instructions"}
-  ],
-  "equipment": ["all tools/equipment mentioned"],
-  "instructions": [
-    {"step": 1, "action": "detailed instruction exactly as explained", "time": "duration if mentioned", "tips": "any cooking tips", "temperature": "if mentioned"}
-  ],
-  "tips": ["all cooking tips and tricks mentioned"],
-  "nutritionNotes": "any nutrition info discussed",
-  "variations": ["alternative ingredients or methods mentioned"],
-  "category": "Recipe",
-  "tags": ["cuisine-type", "meal-type", "cooking-method"],
-  "estimated_read_time": 6
-}`;
-}
-
-// REVIEW PROMPT
-function createAdvancedReviewPrompt(transcription, videoInfo, analysis) {
-  return `Extract comprehensive review information from this product/service review.
-
-Video: "${videoInfo.title}"
-Product: ${analysis.subCategory}
-
-COMPLETE TRANSCRIPT:
-${transcription}
-
-{
-  "title": "Product/Service Review Summary",
-  "summary": "Overall impression and recommendation",
-  "productName": "name of reviewed item",
-  "category": "product category",
-  "priceRange": "price mentioned or estimated range",
-  "pros": ["positive aspect 1", "positive aspect 2"],
-  "cons": ["negative aspect 1", "negative aspect 2"], 
-  "keyFeatures": [
-    {"feature": "feature name", "rating": "1-5", "explanation": "detailed thoughts"}
-  ],
-  "comparison": "how it compares to alternatives mentioned",
-  "recommendation": "who should buy this and why",
-  "verdict": "final recommendation with reasoning",
-  "alternatives": ["other options mentioned"],
-  "category": "Review",
-  "tags": ["product-type", "brand"],
-  "estimated_read_time": 5
-}`;
-}
-
-// FITNESS PROMPT
-function createAdvancedFitnessPrompt(transcription, videoInfo, analysis) {
-  return `Extract fitness routine from this workout video.
-
-Video: "${videoInfo.title}"
-Type: ${analysis.subCategory}
-
-COMPLETE TRANSCRIPT:
-${transcription}
-
-{
-  "title": "Workout/Fitness Program Title", 
-  "summary": "What this workout achieves",
-  "workoutType": "strength|cardio|flexibility|mixed",
-  "targetAreas": ["muscle groups or body areas targeted"],
-  "duration": "workout length",
-  "equipment": ["required equipment"],
-  "exercises": [
-    {"name": "exercise name", "sets": "number", "reps": "number", "duration": "time", "form": "proper form cues", "modifications": "easier/harder versions"}
-  ],
-  "warmUp": ["warm-up activities"],
-  "coolDown": ["cool-down activities"],
-  "safetyTips": ["important safety notes"],
-  "progression": "how to make it harder over time",
-  "frequency": "how often to do this workout",
-  "category": "Fitness",
-  "tags": ["workout-type", "fitness-level"],
-  "estimated_read_time": 6
-}`;
-}
-
-// STORY PROMPT
-function createStoryPrompt(transcription, videoInfo, analysis) {
-  return `Structure this personal story/experience video.
-
-Video: "${videoInfo.title}"
-
-COMPLETE TRANSCRIPT:
-${transcription}
-
-{
-  "title": "Story title",
-  "summary": "Brief overview of what happened",
-  "storyElements": [
-    {"element": "main event/point", "details": "what happened", "impact": "significance or outcome"}
-  ],
-  "keyMoments": ["important moments or turning points"],
-  "lessons": ["what can be learned from this"],
-  "emotions": ["main emotional themes"],
-  "category": "Story",
-  "tags": ["experience-type", "topic"],
-  "estimated_read_time": 4
-}`;
-}
-
-// EDUCATIONAL PROMPT
-function createEducationalPrompt(transcription, videoInfo, analysis) {
-  return `Structure this educational content.
-
-Video: "${videoInfo.title}"
-Topic: ${analysis.subCategory}
-
-COMPLETE TRANSCRIPT:
-${transcription}
-
-{
-  "title": "Educational topic",
-  "summary": "What this teaches",
-  "concepts": [
-    {"concept": "main concept", "explanation": "detailed explanation", "examples": ["examples given"], "importance": "why this matters"}
-  ],
-  "keyPoints": ["main learning points"],
-  "practicalApplications": ["how to use this knowledge"],
-  "additionalResources": ["related topics to explore"],
-  "category": "Educational",
-  "tags": ["subject", "learning-level"],
-  "estimated_read_time": 6
-}`;
-}
-
-// TECH PROMPT
-function createTechPrompt(transcription, videoInfo, analysis) {
-  return `Extract technical information from this technology video.
-
-Video: "${videoInfo.title}"
-Topic: ${analysis.subCategory}
-
-COMPLETE TRANSCRIPT:
-${transcription}
-
-{
-  "title": "Technology guide title",
-  "summary": "What this technology tutorial covers",
-  "techStack": ["technologies, tools, or software covered"],
-  "steps": [
-    {"step": 1, "action": "what to do", "code": "code examples if any", "explanation": "why this step"}
-  ],
-  "requirements": ["system requirements or prerequisites"],
-  "troubleshooting": ["common issues and solutions"],
-  "resources": ["links, tools, or documentation mentioned"],
-  "category": "Tech",
-  "tags": ["technology-type", "skill-level"],
-  "estimated_read_time": 7
-}`;
-}
-
-// FALLBACK GENERAL PROMPT
-function createAdvancedGeneralPrompt(transcription, videoInfo, analysis) {
-  return `Structure this ${analysis.contentType} content about ${analysis.subCategory}.
-
-Video: "${videoInfo.title}"
-Type: ${analysis.contentType}
-Language: ${analysis.language || 'unknown'}
-
-COMPLETE TRANSCRIPT:
-${transcription}
-
-Create comprehensive summary (translate to English if needed):
-
-{
-  "title": "Content title in English", 
-  "summary": "Main message or purpose",
-  "mainPoints": [
-    {"point": "key point", "explanation": "detailed explanation", "importance": "why this matters"}
-  ],
-  "keyTakeaways": ["actionable insights"],
-  "practicalAdvice": ["things viewer can do"],
-  "category": "${analysis.contentType}",
-  "tags": ["relevant", "tags"],
-  "estimated_read_time": 4
-}`;
-}
-
-// Fallback summary
-function createFallbackSummary(videoInfo, analysis) {
-  return {
-    title: videoInfo.title || 'Video Summary',
-    summary: `A ${analysis.contentType} about ${analysis.subCategory}`,
-    category: analysis.contentType,
-    tags: [analysis.contentType, 'video'],
-    estimated_read_time: 3,
-    contentAnalysis: analysis
-  };
-}
-
 app.listen(PORT, () => {
-  console.log(`Video processing server running on port ${PORT}`);
+  console.log(`Bulletproof video processing server running on port ${PORT}`);
   console.log('Health check: GET /health');
   console.log('Process video: POST /process-video');
 });
