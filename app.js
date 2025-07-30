@@ -1,4 +1,4 @@
-// server.js - Railway Backend for Video Processing
+// server.js - Verbeterde Railway Backend voor Video Processing
 const express = require('express');
 const cors = require('cors');
 const { exec } = require('child_process');
@@ -44,9 +44,16 @@ app.post('/process-video', async (req, res) => {
     const transcription = await transcribeAudio(audioPath);
     console.log('Transcription completed, length:', transcription.length);
 
-    // Step 4: Generate summary with GPT
-    const summary = await generateSummary(transcription, videoInfo, platform);
-    console.log('Summary generated');
+    // Step 4: NEW 3-STEP AI PROCESS
+    console.log('Starting 3-step AI processing...');
+    
+    // STEP 4A: Analyze content type
+    const contentAnalysis = await analyzeContentType(transcription, videoInfo);
+    console.log('Content analysis:', contentAnalysis);
+    
+    // STEP 4B: Generate specialized summary
+    const summary = await generateSpecializedSummary(transcription, videoInfo, contentAnalysis);
+    console.log('Specialized summary generated');
 
     // Step 5: Cleanup temp files
     if (fs.existsSync(audioPath)) {
@@ -59,6 +66,7 @@ app.post('/process-video', async (req, res) => {
         videoInfo,
         transcription,
         summary,
+        contentAnalysis, // Include analysis for debugging
         wordCount: transcription.split(' ').length
       }
     });
@@ -113,7 +121,6 @@ async function downloadAndExtractAudio(url) {
     const timestamp = Date.now();
     const audioPath = path.join(tempDir, `audio_${timestamp}.wav`);
     
-    // Use yt-dlp to download audio only
     const command = `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav --audio-quality 0 -o "${audioPath}" "${url}"`;
     
     exec(command, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
@@ -123,13 +130,11 @@ async function downloadAndExtractAudio(url) {
         return;
       }
 
-      // yt-dlp changes the filename, find the actual file
       const actualAudioPath = audioPath.replace('.wav', '.wav');
       
       if (fs.existsSync(actualAudioPath)) {
         resolve(actualAudioPath);
       } else {
-        // Try to find the file with different extension
         const files = fs.readdirSync(tempDir).filter(f => f.startsWith(`audio_${timestamp}`));
         if (files.length > 0) {
           resolve(path.join(tempDir, files[0]));
@@ -178,385 +183,385 @@ async function transcribeAudio(audioPath) {
   }
 }
 
-// Generate summary using 2-step GPT-4o-mini processing
-async function generateSummary(transcription, videoInfo, platform) {
+// NEW: STEP 1 - Analyze what type of content this is
+async function analyzeContentType(transcription, videoInfo) {
   const openaiApiKey = process.env.OPENAI_API_KEY;
   
   if (!openaiApiKey) {
     throw new Error('OPENAI_API_KEY environment variable not set');
   }
 
-  try {
-    // STEP 1: Analyze content type and key elements
-    const analysisResult = await analyzeContentType(transcription, videoInfo, openaiApiKey);
-    console.log('Content analysis:', analysisResult.contentType);
+  const analysisPrompt = `You are an expert content analyst. Analyze this video transcript and determine exactly what type of content this is.
 
-    // STEP 2: Generate specialized summary based on content type
-    const specializedSummary = await generateSpecializedSummary(
-      transcription, 
-      videoInfo, 
-      platform, 
-      analysisResult, 
-      openaiApiKey
-    );
+Video Title: "${videoInfo.title}"
+Video Duration: ${videoInfo.duration ? Math.round(videoInfo.duration / 60) + ' minutes' : 'Unknown'}
+Uploader: ${videoInfo.uploader || 'Unknown'}
 
-    return {
-      ...specializedSummary,
-      contentAnalysis: analysisResult // Include analysis for debugging
-    };
-
-  } catch (error) {
-    console.error('Summary generation error:', error);
-    throw new Error(`Failed to generate summary: ${error.message}`);
-  }
-}
-
-// STEP 1: Analyze what type of content this is
-async function analyzeContentType(transcription, videoInfo, openaiApiKey) {
-  const analysisPrompt = `Analyze this video transcript and determine the content type and key elements.
-
-Video Title: ${videoInfo.title}
-Duration: ${videoInfo.duration ? Math.round(videoInfo.duration / 60) + ' minutes' : 'Unknown'}
-
-Transcript:
+FULL TRANSCRIPT:
 ${transcription}
 
-Respond with JSON in this format:
+Based on the ACTUAL CONTENT being discussed, determine:
+
+1. CONTENT TYPE - Choose the most accurate one:
+   - recipe: Cooking/baking instructions with ingredients and steps
+   - tutorial: Step-by-step instructions to learn/build something
+   - tips: Advice, life hacks, recommendations
+   - review: Product/service evaluation with pros/cons
+   - fitness: Workout routines, exercises, health advice
+   - story: Personal stories, experiences, entertainment
+   - news: Current events, updates, reporting
+   - educational: Teaching concepts, explaining topics
+   - entertainment: Comedy, memes, fun content
+   - other: Anything else
+
+2. SUB-CATEGORY - Be very specific (e.g. "sleep improvement tips", "iPhone review", "pasta recipe")
+
+3. KEY ELEMENTS - What are the main things discussed?
+
+4. STRUCTURE NEEDED - How should this be presented?
+
+Respond ONLY with valid JSON:
 {
-  "contentType": "recipe|tutorial|tips|review|entertainment|news|educational|lifestyle|fitness|other",
-  "subCategory": "specific subcategory (e.g. 'pasta recipe', 'productivity tips', 'phone review')",
+  "contentType": "exact_type_from_list_above",
+  "subCategory": "very_specific_description",
   "keyElements": ["element1", "element2", "element3"],
   "targetAudience": "beginner|intermediate|advanced|general",
-  "primaryFocus": "what is the main focus of this video",
-  "hasSteps": true|false,
-  "estimatedComplexity": "simple|moderate|complex"
+  "primaryFocus": "main_focus_of_content",
+  "hasActionableSteps": true|false,
+  "estimatedComplexity": "simple|moderate|complex",
+  "presentationStyle": "how_this_should_be_formatted"
 }
 
-Be accurate based on the actual content discussed.`;
+Be accurate and specific based on what is ACTUALLY being said in the transcript.`;
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${openaiApiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are an expert content analyzer. Always respond with valid JSON only.'
-        },
-        {
-          role: 'user', 
-          content: analysisPrompt
-        }
-      ],
-      max_tokens: 500,
-      temperature: 0.2
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`Content analysis failed: ${response.status}`);
-  }
-
-  const result = await response.json();
-  
   try {
-    return JSON.parse(result.choices[0].message.content);
-  } catch (parseError) {
-    // Fallback if parsing fails
-    return {
-      contentType: 'other',
-      subCategory: 'general content',
-      keyElements: ['video content'],
-      targetAudience: 'general',
-      primaryFocus: videoInfo.title || 'video content',
-      hasSteps: false,
-      estimatedComplexity: 'simple'
-    };
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openaiApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an expert content analyzer. Always respond with valid JSON only. Be precise and accurate.'
+          },
+          {
+            role: 'user', 
+            content: analysisPrompt
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.1
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Content analysis failed: ${response.status}`);
+    }
+
+    const result = await response.json();
+    
+    try {
+      const analysis = JSON.parse(result.choices[0].message.content);
+      console.log('Content analysis result:', analysis);
+      return analysis;
+    } catch (parseError) {
+      console.error('Failed to parse analysis JSON:', result.choices[0].message.content);
+      // Fallback
+      return {
+        contentType: 'other',
+        subCategory: 'general content',
+        keyElements: ['video content'],
+        targetAudience: 'general',
+        primaryFocus: videoInfo.title || 'video content',
+        hasActionableSteps: false,
+        estimatedComplexity: 'simple',
+        presentationStyle: 'general summary'
+      };
+    }
+  } catch (error) {
+    console.error('Analysis error:', error);
+    throw error;
   }
 }
 
-// STEP 2: Generate specialized summary based on content type
-async function generateSpecializedSummary(transcription, videoInfo, platform, analysis, openaiApiKey) {
-  let specializedPrompt = '';
+// NEW: STEP 2 - Generate specialized content based on analysis
+async function generateSpecializedSummary(transcription, videoInfo, analysis) {
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  
+  if (!openaiApiKey) {
+    throw new Error('OPENAI_API_KEY environment variable not set');
+  }
 
-  // Create specialized prompts based on content type
+  // Create specialized prompt based on content type
+  let specializedPrompt = '';
+  
   switch (analysis.contentType) {
+    case 'tips':
+      specializedPrompt = createAdvancedTipsPrompt(transcription, videoInfo, analysis);
+      break;
     case 'recipe':
-      specializedPrompt = createRecipePrompt(transcription, videoInfo, analysis);
+      specializedPrompt = createAdvancedRecipePrompt(transcription, videoInfo, analysis);
       break;
     case 'tutorial':
-      specializedPrompt = createTutorialPrompt(transcription, videoInfo, analysis);
-      break;
-    case 'tips':
-    case 'lifestyle':
-      specializedPrompt = createTipsPrompt(transcription, videoInfo, analysis);
+      specializedPrompt = createAdvancedTutorialPrompt(transcription, videoInfo, analysis);
       break;
     case 'review':
-      specializedPrompt = createReviewPrompt(transcription, videoInfo, analysis);
+      specializedPrompt = createAdvancedReviewPrompt(transcription, videoInfo, analysis);
       break;
     case 'fitness':
-      specializedPrompt = createFitnessPrompt(transcription, videoInfo, analysis);
+      specializedPrompt = createAdvancedFitnessPrompt(transcription, videoInfo, analysis);
+      break;
+    case 'story':
+      specializedPrompt = createStoryPrompt(transcription, videoInfo, analysis);
+      break;
+    case 'educational':
+      specializedPrompt = createEducationalPrompt(transcription, videoInfo, analysis);
       break;
     default:
-      specializedPrompt = createGeneralPrompt(transcription, videoInfo, analysis);
+      specializedPrompt = createAdvancedGeneralPrompt(transcription, videoInfo, analysis);
   }
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${openaiApiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: `You are an expert at creating detailed, specialized summaries. Always respond with valid JSON only. Focus on being comprehensive and actionable.`
-        },
-        {
-          role: 'user', 
-          content: specializedPrompt
-        }
-      ],
-      max_tokens: 2000,
-      temperature: 0.3
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`Specialized summary failed: ${response.status}`);
-  }
-
-  const result = await response.json();
-  
   try {
-    return JSON.parse(result.choices[0].message.content);
-  } catch (parseError) {
-    console.error('Failed to parse specialized summary:', result.choices[0].message.content);
-    // Return basic fallback
-    return createFallbackSummary(videoInfo, analysis);
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openaiApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You are an expert content processor. Create comprehensive, detailed, and actionable content summaries. Always respond with valid JSON only. Extract ALL relevant details from the transcript.`
+          },
+          {
+            role: 'user', 
+            content: specializedPrompt
+          }
+        ],
+        max_tokens: 2500,
+        temperature: 0.2
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Specialized summary failed: ${response.status}`);
+    }
+
+    const result = await response.json();
+    
+    try {
+      const summary = JSON.parse(result.choices[0].message.content);
+      return {
+        ...summary,
+        contentAnalysis: analysis // Include original analysis
+      };
+    } catch (parseError) {
+      console.error('Failed to parse specialized summary:', result.choices[0].message.content);
+      return createFallbackSummary(videoInfo, analysis);
+    }
+  } catch (error) {
+    console.error('Specialized summary error:', error);
+    throw error;
   }
 }
 
-// RECIPE-SPECIFIC PROMPT
-function createRecipePrompt(transcription, videoInfo, analysis) {
-  return `Create a detailed recipe summary from this cooking video.
+// ADVANCED TIPS PROMPT - Voor jouw sleep tips video
+function createAdvancedTipsPrompt(transcription, videoInfo, analysis) {
+  return `Extract and structure ALL tips from this ${analysis.subCategory} video.
 
-Video Title: ${videoInfo.title}
-Duration: ${videoInfo.duration ? Math.round(videoInfo.duration / 60) + ' minutes' : 'Unknown'}
-Sub-category: ${analysis.subCategory}
+Video: "${videoInfo.title}"
+Focus: ${analysis.primaryFocus}
 
-Transcript:
+COMPLETE TRANSCRIPT:
 ${transcription}
 
-Generate a comprehensive JSON response:
+Create a comprehensive JSON response with EVERY tip mentioned:
+
 {
-  "title": "Clear recipe name",
-  "summary": "Brief description of the dish and cooking method",
-  "servings": "number of servings or portions",
-  "totalTime": "estimated total cooking time",
-  "difficulty": "Easy|Medium|Hard",
-  "ingredients": [
-    {"item": "ingredient name", "amount": "quantity", "notes": "optional prep notes"}
+  "title": "Clear descriptive title",
+  "summary": "What this video helps you achieve",
+  "targetArea": "${analysis.subCategory}",
+  "tips": [
+    {
+      "tip": "Clear tip title/name",
+      "explanation": "Detailed explanation of what to do",
+      "whyItWorks": "Scientific/logical reasoning why this works",
+      "howToImplement": "Step-by-step how to actually do this",
+      "timeToSeeResults": "When you'll notice improvements",
+      "difficulty": "Easy|Medium|Hard",
+      "commonMistakes": "What people typically do wrong",
+      "additionalNotes": "Any extra context or warnings"
+    }
   ],
-  "equipment": ["pan", "oven", "etc"],
-  "instructions": [
-    {"step": 1, "action": "detailed instruction", "time": "duration if mentioned", "tips": "helpful tips"}
-  ],
-  "tips": ["cooking tip 1", "cooking tip 2"],
-  "nutritionNotes": "any nutrition info mentioned",
-  "variations": ["possible variations mentioned"],
-  "category": "Recipe",
-  "tags": ["cuisine-type", "meal-type", "dietary-restrictions"],
+  "implementationPlan": "Suggested order to try these tips",
+  "measuringSuccess": "How to know if the tips are working",
+  "relatedTopics": ["connected areas or additional resources"],
+  "category": "Tips",
+  "tags": ["${analysis.subCategory}", "improvement", "lifestyle"],
   "estimated_read_time": 5
 }
 
-Be very detailed and extract ALL ingredients and steps mentioned.`;
+IMPORTANT: Extract EVERY single tip mentioned. Don't summarize - be comprehensive and detailed. Include all practical advice, methods, techniques, and recommendations discussed.`;
 }
 
-// TUTORIAL-SPECIFIC PROMPT  
-function createTutorialPrompt(transcription, videoInfo, analysis) {
-  return `Create a detailed tutorial summary from this instructional video.
+// ADVANCED RECIPE PROMPT
+function createAdvancedRecipePrompt(transcription, videoInfo, analysis) {
+  return `Extract complete recipe details from this cooking video.
 
-Video Title: ${videoInfo.title}
-Sub-category: ${analysis.subCategory}
+Video: "${videoInfo.title}"
+Type: ${analysis.subCategory}
 
-Transcript:
+COMPLETE TRANSCRIPT:
 ${transcription}
 
-Generate a comprehensive JSON response:
+Extract EVERY ingredient, step, and cooking detail mentioned:
+
 {
-  "title": "Clear tutorial title",
-  "summary": "What you'll learn and achieve",
-  "difficulty": "Beginner|Intermediate|Advanced", 
-  "timeRequired": "estimated time to complete",
-  "materialsNeeded": [
-    {"item": "material/tool name", "required": true|false, "alternatives": "if any"}
+  "title": "Recipe name",
+  "summary": "Description of the dish",
+  "servings": "number mentioned or estimated",
+  "totalTime": "total cooking time mentioned",
+  "difficulty": "Easy|Medium|Hard",
+  "ingredients": [
+    {"item": "ingredient name", "amount": "exact quantity mentioned", "notes": "prep instructions"}
   ],
-  "prerequisites": ["what you should know beforehand"],
-  "steps": [
-    {"step": 1, "title": "step title", "instruction": "detailed instruction", "timeEstimate": "time", "commonMistakes": "what to avoid", "successTips": "how to do it right"}
+  "equipment": ["all tools/equipment mentioned"],
+  "instructions": [
+    {"step": 1, "action": "detailed instruction exactly as explained", "time": "duration if mentioned", "tips": "any cooking tips", "temperature": "if mentioned"}
   ],
-  "troubleshooting": [
-    {"problem": "common issue", "solution": "how to fix"}
-  ],
-  "finalResult": "what you'll have accomplished",
-  "nextSteps": ["what to do after completing this"],
-  "category": "Tutorial", 
-  "tags": ["skill-type", "tools-used"],
+  "tips": ["all cooking tips and tricks mentioned"],
+  "nutritionNotes": "any nutrition info discussed",
+  "variations": ["alternative ingredients or methods mentioned"],
+  "category": "Recipe",
+  "tags": ["cuisine-type", "meal-type", "cooking-method"],
   "estimated_read_time": 6
 }
 
-Extract ALL detailed instructions and tips mentioned.`;
+Extract EVERYTHING mentioned - be comprehensive and detailed.`;
 }
 
-// TIPS/LIFESTYLE-SPECIFIC PROMPT
-function createTipsPrompt(transcription, videoInfo, analysis) {
-  return `Create a detailed tips summary from this advice/lifestyle video.
+// ADVANCED TUTORIAL PROMPT
+function createAdvancedTutorialPrompt(transcription, videoInfo, analysis) {
+  return `Extract complete tutorial instructions from this instructional video.
 
-Video Title: ${videoInfo.title}
-Sub-category: ${analysis.subCategory}
+Video: "${videoInfo.title}"
+Type: ${analysis.subCategory}
 
-Transcript:
+COMPLETE TRANSCRIPT:
 ${transcription}
 
-Generate a comprehensive JSON response:
+Create detailed tutorial structure:
+
 {
-  "title": "Clear title about the tips topic",
-  "summary": "What area of life these tips improve",
-  "targetArea": "productivity|health|relationships|finance|lifestyle|other",
-  "tips": [
-    {
-      "tip": "clear tip title",
-      "explanation": "detailed explanation of the tip",
-      "whyItWorks": "scientific or logical reasoning",
-      "howToImplement": "practical steps to apply this tip",
-      "timeToSeeResults": "when to expect results",
-      "difficulty": "Easy|Medium|Hard",
-      "commonMistakes": "what people get wrong"
-    }
+  "title": "Clear tutorial title",
+  "summary": "What you'll learn and accomplish",
+  "difficulty": "Beginner|Intermediate|Advanced", 
+  "timeRequired": "estimated completion time",
+  "materialsNeeded": [
+    {"item": "tool/material name", "required": true|false, "alternatives": "if mentioned"}
   ],
-  "implementationPlan": "suggested order or plan to apply these tips",
-  "measuringSuccess": "how to track if tips are working",
-  "relatedTopics": ["connected topics or areas"],
-  "category": "Tips",
-  "tags": ["life-area", "improvement-type"],
+  "prerequisites": ["skills or knowledge needed beforehand"],
+  "steps": [
+    {"step": 1, "title": "step name", "instruction": "detailed instruction", "timeEstimate": "duration", "commonMistakes": "what to avoid", "successTips": "how to do it right", "visualCues": "what to look for"}
+  ],
+  "troubleshooting": [
+    {"problem": "common issue mentioned", "solution": "how to fix it"}
+  ],
+  "finalResult": "what you'll have accomplished",
+  "nextSteps": ["what to do after completing"],
+  "category": "Tutorial", 
+  "tags": ["skill-type", "tools-used", "difficulty"],
+  "estimated_read_time": 7
+}
+
+Extract ALL instructions, tips, warnings, and details mentioned.`;
+}
+
+// STORY PROMPT
+function createStoryPrompt(transcription, videoInfo, analysis) {
+  return `Structure this personal story/experience video.
+
+Video: "${videoInfo.title}"
+
+COMPLETE TRANSCRIPT:
+${transcription}
+
+{
+  "title": "Story title",
+  "summary": "Brief overview of what happened",
+  "storyElements": [
+    {"element": "main event/point", "details": "what happened", "impact": "significance or outcome"}
+  ],
+  "keyMoments": ["important moments or turning points"],
+  "lessons": ["what can be learned from this"],
+  "emotions": ["main emotional themes"],
+  "category": "Story",
+  "tags": ["experience-type", "topic"],
   "estimated_read_time": 4
+}`;
 }
 
-Make each tip comprehensive with reasoning and implementation details.`;
-}
+// EDUCATIONAL PROMPT
+function createEducationalPrompt(transcription, videoInfo, analysis) {
+  return `Structure this educational content.
 
-// REVIEW-SPECIFIC PROMPT
-function createReviewPrompt(transcription, videoInfo, analysis) {
-  return `Create a detailed review summary from this product/service review video.
+Video: "${videoInfo.title}"
+Topic: ${analysis.subCategory}
 
-Video Title: ${videoInfo.title}
-Sub-category: ${analysis.subCategory}
-
-Transcript:
+COMPLETE TRANSCRIPT:
 ${transcription}
 
-Generate a comprehensive JSON response:
 {
-  "title": "Product/Service Review Summary",
-  "summary": "Overall impression and recommendation",
-  "productName": "name of reviewed item",
-  "category": "product category",
-  "priceRange": "price mentioned or estimated range",
-  "pros": ["positive aspect 1", "positive aspect 2"],
-  "cons": ["negative aspect 1", "negative aspect 2"], 
-  "keyFeatures": [
-    {"feature": "feature name", "rating": "1-5", "explanation": "detailed thoughts"}
+  "title": "Educational topic",
+  "summary": "What this teaches",
+  "concepts": [
+    {"concept": "main concept", "explanation": "detailed explanation", "examples": ["examples given"], "importance": "why this matters"}
   ],
-  "comparison": "how it compares to alternatives mentioned",
-  "recommendation": "who should buy this and why",
-  "verdict": "final recommendation with reasoning",
-  "alternatives": ["other options mentioned"],
-  "category": "Review",
-  "tags": ["product-type", "brand"],
-  "estimated_read_time": 4
+  "keyPoints": ["main learning points"],
+  "practicalApplications": ["how to use this knowledge"],
+  "additionalResources": ["related topics to explore"],
+  "category": "Educational",
+  "tags": ["subject", "learning-level"],
+  "estimated_read_time": 6
+}`;
 }
 
-Extract detailed opinions and specific comparisons mentioned.`;
-}
+// Fallback for other content types
+function createAdvancedGeneralPrompt(transcription, videoInfo, analysis) {
+  return `Structure this ${analysis.contentType} content about ${analysis.subCategory}.
 
-// FITNESS-SPECIFIC PROMPT
-function createFitnessPrompt(transcription, videoInfo, analysis) {
-  return `Create a detailed fitness summary from this workout/health video.
+Video: "${videoInfo.title}"
 
-Video Title: ${videoInfo.title}
-Sub-category: ${analysis.subCategory}
-
-Transcript:
+COMPLETE TRANSCRIPT:
 ${transcription}
 
-Generate a comprehensive JSON response:
 {
-  "title": "Workout/Fitness Program Title", 
-  "summary": "What this workout achieves",
-  "workoutType": "strength|cardio|flexibility|mixed",
-  "targetAreas": ["muscle groups or body areas targeted"],
-  "duration": "workout length",
-  "equipment": ["required equipment"],
-  "exercises": [
-    {"name": "exercise name", "sets": "number", "reps": "number", "duration": "time", "form": "proper form cues", "modifications": "easier/harder versions"}
-  ],
-  "warmUp": ["warm-up activities"],
-  "coolDown": ["cool-down activities"],
-  "safetyTips": ["important safety notes"],
-  "progression": "how to make it harder over time",
-  "frequency": "how often to do this workout",
-  "category": "Fitness",
-  "tags": ["workout-type", "fitness-level"],
-  "estimated_read_time": 5
-}
-
-Extract all exercise details, form cues, and safety information.`;
-}
-
-// GENERAL/FALLBACK PROMPT
-function createGeneralPrompt(transcription, videoInfo, analysis) {
-  return `Create a detailed summary from this video content.
-
-Video Title: ${videoInfo.title}
-Content Type: ${analysis.contentType}
-Sub-category: ${analysis.subCategory}
-
-Transcript:
-${transcription}
-
-Generate a comprehensive JSON response:
-{
-  "title": "Clear, descriptive title",
-  "summary": "Comprehensive overview of the content",
+  "title": "Content title", 
+  "summary": "Main message or purpose",
   "mainPoints": [
     {"point": "key point", "explanation": "detailed explanation", "importance": "why this matters"}
   ],
-  "keyTakeaways": ["actionable takeaway 1", "actionable takeaway 2"],
-  "targetAudience": "${analysis.targetAudience}",
-  "actionableSteps": ["what viewer can do after watching"],
-  "additionalResources": ["related topics or resources mentioned"],
+  "keyTakeaways": ["actionable insights"],
+  "practicalAdvice": ["things viewer can do"],
   "category": "${analysis.contentType}",
-  "tags": ["relevant", "tags", "based", "on", "content"],
+  "tags": ["relevant", "tags"],
   "estimated_read_time": 4
+}`;
 }
 
-Focus on being comprehensive and actionable based on the actual content.`;
-}
+// ... (rest of your existing functions like createReviewPrompt, createFitnessPrompt remain the same)
 
-// Fallback summary if JSON parsing fails
 function createFallbackSummary(videoInfo, analysis) {
   return {
     title: videoInfo.title || 'Video Summary',
-    summary: `A ${analysis.contentType} video about ${analysis.subCategory}`,
+    summary: `A ${analysis.contentType} about ${analysis.subCategory}`,
     category: analysis.contentType,
-    difficulty: analysis.estimatedComplexity,
     tags: [analysis.contentType, 'video'],
     estimated_read_time: 3
   };
