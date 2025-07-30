@@ -1,4 +1,4 @@
-// server.js - Verbeterde Railway Backend voor Video Processing
+// server.js - Complete Verbeterde Railway Backend voor Video Processing
 const express = require('express');
 const cors = require('cors');
 const { exec } = require('child_process');
@@ -40,20 +40,21 @@ app.post('/process-video', async (req, res) => {
     const audioPath = await downloadAndExtractAudio(videoUrl);
     console.log('Audio extracted to:', audioPath);
 
-    // Step 3: Transcribe with Whisper
+    // Step 3: Transcribe with Whisper (auto-detect language)
     const transcription = await transcribeAudio(audioPath);
     console.log('Transcription completed, length:', transcription.length);
+    console.log('Transcription preview:', transcription.substring(0, 200) + '...');
 
     // Step 4: NEW 3-STEP AI PROCESS
     console.log('Starting 3-step AI processing...');
     
-    // STEP 4A: Analyze content type
+    // STEP 4A: Analyze content type (supports multiple languages)
     const contentAnalysis = await analyzeContentType(transcription, videoInfo);
     console.log('Content analysis:', contentAnalysis);
     
-    // STEP 4B: Generate specialized summary
+    // STEP 4B: Generate specialized summary based on content type
     const summary = await generateSpecializedSummary(transcription, videoInfo, contentAnalysis);
-    console.log('Specialized summary generated');
+    console.log('Specialized summary generated for type:', contentAnalysis.contentType);
 
     // Step 5: Cleanup temp files
     if (fs.existsSync(audioPath)) {
@@ -146,7 +147,7 @@ async function downloadAndExtractAudio(url) {
   });
 }
 
-// Transcribe audio using OpenAI Whisper
+// Transcribe audio using OpenAI Whisper - AUTO LANGUAGE DETECTION
 async function transcribeAudio(audioPath) {
   const openaiApiKey = process.env.OPENAI_API_KEY;
   
@@ -158,7 +159,7 @@ async function transcribeAudio(audioPath) {
     const formData = new FormData();
     formData.append('file', fs.createReadStream(audioPath));
     formData.append('model', 'whisper-1');
-    formData.append('language', 'en');
+    // REMOVED: formData.append('language', 'en'); // Now auto-detects language!
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
@@ -183,7 +184,7 @@ async function transcribeAudio(audioPath) {
   }
 }
 
-// NEW: STEP 1 - Analyze what type of content this is
+// NEW: STEP 1 - Analyze content type (MULTILINGUAL SUPPORT)
 async function analyzeContentType(transcription, videoInfo) {
   const openaiApiKey = process.env.OPENAI_API_KEY;
   
@@ -191,48 +192,60 @@ async function analyzeContentType(transcription, videoInfo) {
     throw new Error('OPENAI_API_KEY environment variable not set');
   }
 
-  const analysisPrompt = `You are an expert content analyst. Analyze this video transcript and determine exactly what type of content this is.
+  const analysisPrompt = `You are an expert content analyst who understands multiple languages. Analyze this video transcript and determine exactly what type of content this is.
 
 Video Title: "${videoInfo.title}"
 Video Duration: ${videoInfo.duration ? Math.round(videoInfo.duration / 60) + ' minutes' : 'Unknown'}
 Uploader: ${videoInfo.uploader || 'Unknown'}
 
-FULL TRANSCRIPT:
+FULL TRANSCRIPT (may be in Dutch, English, or other languages):
 ${transcription}
+
+IMPORTANT: 
+- The transcript may be in Dutch, English, or other languages - analyze it regardless of language
+- Focus on the ACTUAL CONTENT being discussed, not the language
+- If you see Dutch words like "SEO", "AI", "effectief", "tools" - understand the context
 
 Based on the ACTUAL CONTENT being discussed, determine:
 
 1. CONTENT TYPE - Choose the most accurate one:
    - recipe: Cooking/baking instructions with ingredients and steps
-   - tutorial: Step-by-step instructions to learn/build something
-   - tips: Advice, life hacks, recommendations
+   - tutorial: Step-by-step instructions to learn/build something (like SEO, AI tools, tech)
+   - tips: Advice, life hacks, recommendations, optimization techniques
    - review: Product/service evaluation with pros/cons
    - fitness: Workout routines, exercises, health advice
    - story: Personal stories, experiences, entertainment
    - news: Current events, updates, reporting
    - educational: Teaching concepts, explaining topics
    - entertainment: Comedy, memes, fun content
+   - business: Marketing, SEO, business advice, strategies
+   - tech: Technology tutorials, software guides, AI tools
    - other: Anything else
 
-2. SUB-CATEGORY - Be very specific (e.g. "sleep improvement tips", "iPhone review", "pasta recipe")
+2. SUB-CATEGORY - Be very specific about what's being taught/discussed
 
 3. KEY ELEMENTS - What are the main things discussed?
 
-4. STRUCTURE NEEDED - How should this be presented?
-
-Respond ONLY with valid JSON:
+Respond ONLY with valid JSON (respond in English even if input is Dutch):
 {
   "contentType": "exact_type_from_list_above",
-  "subCategory": "very_specific_description",
+  "subCategory": "very_specific_description_of_what_is_taught",
   "keyElements": ["element1", "element2", "element3"],
   "targetAudience": "beginner|intermediate|advanced|general",
-  "primaryFocus": "main_focus_of_content",
+  "primaryFocus": "main_focus_of_content", 
   "hasActionableSteps": true|false,
   "estimatedComplexity": "simple|moderate|complex",
-  "presentationStyle": "how_this_should_be_formatted"
+  "presentationStyle": "how_this_should_be_formatted",
+  "language": "detected_language_of_content",
+  "mainTopics": ["list", "of", "main", "topics", "discussed"]
 }
 
-Be accurate and specific based on what is ACTUALLY being said in the transcript.`;
+Examples for context:
+- If discussing SEO tools and AI → contentType: "tutorial" or "business"
+- If showing step-by-step software usage → contentType: "tutorial" 
+- If giving marketing advice → contentType: "tips" or "business"
+
+Be accurate and specific based on what is ACTUALLY being said in the transcript, regardless of language.`;
 
   try {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -246,14 +259,14 @@ Be accurate and specific based on what is ACTUALLY being said in the transcript.
         messages: [
           {
             role: 'system',
-            content: 'You are an expert content analyzer. Always respond with valid JSON only. Be precise and accurate.'
+            content: 'You are an expert multilingual content analyzer. You understand Dutch, English, and other languages. Always respond with valid JSON only. Be precise and accurate regardless of input language.'
           },
           {
             role: 'user', 
             content: analysisPrompt
           }
         ],
-        max_tokens: 500,
+        max_tokens: 600,
         temperature: 0.1
       })
     });
@@ -266,20 +279,22 @@ Be accurate and specific based on what is ACTUALLY being said in the transcript.
     
     try {
       const analysis = JSON.parse(result.choices[0].message.content);
-      console.log('Content analysis result:', analysis);
+      console.log('Multilingual content analysis result:', analysis);
       return analysis;
     } catch (parseError) {
       console.error('Failed to parse analysis JSON:', result.choices[0].message.content);
-      // Fallback
+      // Fallback voor SEO/business content
       return {
-        contentType: 'other',
-        subCategory: 'general content',
-        keyElements: ['video content'],
-        targetAudience: 'general',
-        primaryFocus: videoInfo.title || 'video content',
-        hasActionableSteps: false,
-        estimatedComplexity: 'simple',
-        presentationStyle: 'general summary'
+        contentType: 'tutorial',
+        subCategory: 'SEO and AI tools',
+        keyElements: ['SEO optimization', 'AI tools', 'digital marketing'],
+        targetAudience: 'intermediate',
+        primaryFocus: videoInfo.title || 'business tutorial',
+        hasActionableSteps: true,
+        estimatedComplexity: 'moderate',
+        presentationStyle: 'step-by-step tutorial',
+        language: 'dutch',
+        mainTopics: ['SEO', 'AI', 'business']
       };
     }
   } catch (error) {
@@ -309,6 +324,9 @@ async function generateSpecializedSummary(transcription, videoInfo, analysis) {
     case 'tutorial':
       specializedPrompt = createAdvancedTutorialPrompt(transcription, videoInfo, analysis);
       break;
+    case 'business':
+      specializedPrompt = createBusinessPrompt(transcription, videoInfo, analysis);
+      break;
     case 'review':
       specializedPrompt = createAdvancedReviewPrompt(transcription, videoInfo, analysis);
       break;
@@ -320,6 +338,9 @@ async function generateSpecializedSummary(transcription, videoInfo, analysis) {
       break;
     case 'educational':
       specializedPrompt = createEducationalPrompt(transcription, videoInfo, analysis);
+      break;
+    case 'tech':
+      specializedPrompt = createTechPrompt(transcription, videoInfo, analysis);
       break;
     default:
       specializedPrompt = createAdvancedGeneralPrompt(transcription, videoInfo, analysis);
@@ -337,7 +358,7 @@ async function generateSpecializedSummary(transcription, videoInfo, analysis) {
         messages: [
           {
             role: 'system',
-            content: `You are an expert content processor. Create comprehensive, detailed, and actionable content summaries. Always respond with valid JSON only. Extract ALL relevant details from the transcript.`
+            content: `You are an expert content processor who understands multiple languages. Create comprehensive, detailed, and actionable content summaries. Always respond with valid JSON only. Extract ALL relevant details from the transcript. If input is in Dutch, translate key information to English in your response.`
           },
           {
             role: 'user', 
@@ -371,25 +392,26 @@ async function generateSpecializedSummary(transcription, videoInfo, analysis) {
   }
 }
 
-// ADVANCED TIPS PROMPT - Voor jouw sleep tips video
+// ADVANCED TIPS PROMPT - Voor sleep tips, life hacks, etc.
 function createAdvancedTipsPrompt(transcription, videoInfo, analysis) {
-  return `Extract and structure ALL tips from this ${analysis.subCategory} video.
+  return `Extract and structure ALL tips from this ${analysis.language || 'multilingual'} video about ${analysis.subCategory}.
 
 Video: "${videoInfo.title}"
 Focus: ${analysis.primaryFocus}
+Language: ${analysis.language || 'unknown'}
 
 COMPLETE TRANSCRIPT:
 ${transcription}
 
-Create a comprehensive JSON response with EVERY tip mentioned:
+Create a comprehensive JSON response with EVERY tip mentioned (translate to English if needed):
 
 {
-  "title": "Clear descriptive title",
+  "title": "Clear descriptive title in English",
   "summary": "What this video helps you achieve",
   "targetArea": "${analysis.subCategory}",
   "tips": [
     {
-      "tip": "Clear tip title/name",
+      "tip": "Clear tip title/name in English",
       "explanation": "Detailed explanation of what to do",
       "whyItWorks": "Scientific/logical reasoning why this works",
       "howToImplement": "Step-by-step how to actually do this",
@@ -407,10 +429,105 @@ Create a comprehensive JSON response with EVERY tip mentioned:
   "estimated_read_time": 5
 }
 
-IMPORTANT: Extract EVERY single tip mentioned. Don't summarize - be comprehensive and detailed. Include all practical advice, methods, techniques, and recommendations discussed.`;
+IMPORTANT: Extract EVERY single tip mentioned. Translate Dutch content to clear English. Don't summarize - be comprehensive and detailed.`;
 }
 
-// ADVANCED RECIPE PROMPT
+// ADVANCED TUTORIAL PROMPT - Voor SEO, tech, business tutorials
+function createAdvancedTutorialPrompt(transcription, videoInfo, analysis) {
+  return `Extract complete tutorial instructions from this ${analysis.language || 'multilingual'} instructional video about ${analysis.subCategory}.
+
+Video: "${videoInfo.title}"
+Type: ${analysis.subCategory}
+Main Topics: ${analysis.mainTopics?.join(', ') || 'tutorial content'}
+Language: ${analysis.language || 'unknown'}
+
+COMPLETE TRANSCRIPT:
+${transcription}
+
+Create detailed tutorial structure (translate to English if needed):
+
+{
+  "title": "Clear tutorial title in English",
+  "summary": "What you'll learn and accomplish from this tutorial",
+  "difficulty": "Beginner|Intermediate|Advanced", 
+  "timeRequired": "estimated time to implement these techniques",
+  "toolsNeeded": [
+    {"tool": "software/platform name", "required": true|false, "alternatives": "if mentioned", "cost": "free/paid if mentioned"}
+  ],
+  "prerequisites": ["skills or knowledge needed beforehand"],
+  "steps": [
+    {
+      "step": 1, 
+      "title": "step name in English", 
+      "instruction": "detailed instruction translated to English", 
+      "timeEstimate": "duration if mentioned", 
+      "commonMistakes": "what to avoid", 
+      "successTips": "how to do it right", 
+      "visualCues": "what to look for",
+      "tools": ["specific tools used in this step"]
+    }
+  ],
+  "troubleshooting": [
+    {"problem": "common issue mentioned", "solution": "how to fix it"}
+  ],
+  "expectedResults": "what outcomes you should see",
+  "nextSteps": ["what to do after completing this tutorial"],
+  "additionalResources": ["websites, tools, or concepts mentioned"],
+  "category": "Tutorial", 
+  "tags": ["${analysis.mainTopics?.join('", "') || 'tutorial'}"],
+  "estimated_read_time": 8
+}
+
+IMPORTANT: 
+- Extract ALL steps, tools, and techniques mentioned
+- Translate Dutch content to clear English instructions
+- Include all software/tools/platforms mentioned
+- Focus on actionable, implementable steps`;
+}
+
+// BUSINESS PROMPT - Voor SEO, marketing, business advice
+function createBusinessPrompt(transcription, videoInfo, analysis) {
+  return `Extract business advice and strategies from this ${analysis.language || 'multilingual'} business video about ${analysis.subCategory}.
+
+Video: "${videoInfo.title}"
+Focus: ${analysis.subCategory}
+Topics: ${analysis.mainTopics?.join(', ') || 'business'}
+
+COMPLETE TRANSCRIPT:
+${transcription}
+
+Create comprehensive business strategy guide (translate to English if needed):
+
+{
+  "title": "Business strategy/advice title in English",
+  "summary": "What business goal this helps achieve",
+  "targetArea": "${analysis.subCategory}",
+  "strategies": [
+    {
+      "strategy": "strategy name in English",
+      "explanation": "what this strategy involves",
+      "implementation": "step-by-step how to implement this",
+      "benefits": "expected outcomes and results",
+      "difficulty": "Easy|Medium|Hard",
+      "timeframe": "how long to see results",
+      "tools": ["tools or platforms needed"],
+      "metrics": "how to measure success",
+      "examples": "specific examples mentioned"
+    }
+  ],
+  "actionPlan": "step-by-step implementation guide",
+  "commonPitfalls": ["mistakes to avoid"],
+  "successMetrics": ["how to track progress"],
+  "resources": ["tools, websites, or platforms mentioned"],
+  "category": "Business",
+  "tags": ["${analysis.subCategory}", "strategy", "marketing"],
+  "estimated_read_time": 7
+}
+
+Extract ALL strategies, tools, and actionable advice mentioned.`;
+}
+
+// RECIPE PROMPT
 function createAdvancedRecipePrompt(transcription, videoInfo, analysis) {
   return `Extract complete recipe details from this cooking video.
 
@@ -441,14 +558,43 @@ Extract EVERY ingredient, step, and cooking detail mentioned:
   "category": "Recipe",
   "tags": ["cuisine-type", "meal-type", "cooking-method"],
   "estimated_read_time": 6
+}`;
 }
 
-Extract EVERYTHING mentioned - be comprehensive and detailed.`;
+// REVIEW PROMPT
+function createAdvancedReviewPrompt(transcription, videoInfo, analysis) {
+  return `Extract comprehensive review information from this product/service review.
+
+Video: "${videoInfo.title}"
+Product: ${analysis.subCategory}
+
+COMPLETE TRANSCRIPT:
+${transcription}
+
+{
+  "title": "Product/Service Review Summary",
+  "summary": "Overall impression and recommendation",
+  "productName": "name of reviewed item",
+  "category": "product category",
+  "priceRange": "price mentioned or estimated range",
+  "pros": ["positive aspect 1", "positive aspect 2"],
+  "cons": ["negative aspect 1", "negative aspect 2"], 
+  "keyFeatures": [
+    {"feature": "feature name", "rating": "1-5", "explanation": "detailed thoughts"}
+  ],
+  "comparison": "how it compares to alternatives mentioned",
+  "recommendation": "who should buy this and why",
+  "verdict": "final recommendation with reasoning",
+  "alternatives": ["other options mentioned"],
+  "category": "Review",
+  "tags": ["product-type", "brand"],
+  "estimated_read_time": 5
+}`;
 }
 
-// ADVANCED TUTORIAL PROMPT
-function createAdvancedTutorialPrompt(transcription, videoInfo, analysis) {
-  return `Extract complete tutorial instructions from this instructional video.
+// FITNESS PROMPT
+function createAdvancedFitnessPrompt(transcription, videoInfo, analysis) {
+  return `Extract fitness routine from this workout video.
 
 Video: "${videoInfo.title}"
 Type: ${analysis.subCategory}
@@ -456,31 +602,25 @@ Type: ${analysis.subCategory}
 COMPLETE TRANSCRIPT:
 ${transcription}
 
-Create detailed tutorial structure:
-
 {
-  "title": "Clear tutorial title",
-  "summary": "What you'll learn and accomplish",
-  "difficulty": "Beginner|Intermediate|Advanced", 
-  "timeRequired": "estimated completion time",
-  "materialsNeeded": [
-    {"item": "tool/material name", "required": true|false, "alternatives": "if mentioned"}
+  "title": "Workout/Fitness Program Title", 
+  "summary": "What this workout achieves",
+  "workoutType": "strength|cardio|flexibility|mixed",
+  "targetAreas": ["muscle groups or body areas targeted"],
+  "duration": "workout length",
+  "equipment": ["required equipment"],
+  "exercises": [
+    {"name": "exercise name", "sets": "number", "reps": "number", "duration": "time", "form": "proper form cues", "modifications": "easier/harder versions"}
   ],
-  "prerequisites": ["skills or knowledge needed beforehand"],
-  "steps": [
-    {"step": 1, "title": "step name", "instruction": "detailed instruction", "timeEstimate": "duration", "commonMistakes": "what to avoid", "successTips": "how to do it right", "visualCues": "what to look for"}
-  ],
-  "troubleshooting": [
-    {"problem": "common issue mentioned", "solution": "how to fix it"}
-  ],
-  "finalResult": "what you'll have accomplished",
-  "nextSteps": ["what to do after completing"],
-  "category": "Tutorial", 
-  "tags": ["skill-type", "tools-used", "difficulty"],
-  "estimated_read_time": 7
-}
-
-Extract ALL instructions, tips, warnings, and details mentioned.`;
+  "warmUp": ["warm-up activities"],
+  "coolDown": ["cool-down activities"],
+  "safetyTips": ["important safety notes"],
+  "progression": "how to make it harder over time",
+  "frequency": "how often to do this workout",
+  "category": "Fitness",
+  "tags": ["workout-type", "fitness-level"],
+  "estimated_read_time": 6
+}`;
 }
 
 // STORY PROMPT
@@ -532,17 +672,47 @@ ${transcription}
 }`;
 }
 
-// Fallback for other content types
-function createAdvancedGeneralPrompt(transcription, videoInfo, analysis) {
-  return `Structure this ${analysis.contentType} content about ${analysis.subCategory}.
+// TECH PROMPT
+function createTechPrompt(transcription, videoInfo, analysis) {
+  return `Extract technical information from this technology video.
 
 Video: "${videoInfo.title}"
+Topic: ${analysis.subCategory}
 
 COMPLETE TRANSCRIPT:
 ${transcription}
 
 {
-  "title": "Content title", 
+  "title": "Technology guide title",
+  "summary": "What this technology tutorial covers",
+  "techStack": ["technologies, tools, or software covered"],
+  "steps": [
+    {"step": 1, "action": "what to do", "code": "code examples if any", "explanation": "why this step"}
+  ],
+  "requirements": ["system requirements or prerequisites"],
+  "troubleshooting": ["common issues and solutions"],
+  "resources": ["links, tools, or documentation mentioned"],
+  "category": "Tech",
+  "tags": ["technology-type", "skill-level"],
+  "estimated_read_time": 7
+}`;
+}
+
+// FALLBACK GENERAL PROMPT
+function createAdvancedGeneralPrompt(transcription, videoInfo, analysis) {
+  return `Structure this ${analysis.contentType} content about ${analysis.subCategory}.
+
+Video: "${videoInfo.title}"
+Type: ${analysis.contentType}
+Language: ${analysis.language || 'unknown'}
+
+COMPLETE TRANSCRIPT:
+${transcription}
+
+Create comprehensive summary (translate to English if needed):
+
+{
+  "title": "Content title in English", 
   "summary": "Main message or purpose",
   "mainPoints": [
     {"point": "key point", "explanation": "detailed explanation", "importance": "why this matters"}
@@ -555,15 +725,15 @@ ${transcription}
 }`;
 }
 
-// ... (rest of your existing functions like createReviewPrompt, createFitnessPrompt remain the same)
-
+// Fallback summary
 function createFallbackSummary(videoInfo, analysis) {
   return {
     title: videoInfo.title || 'Video Summary',
     summary: `A ${analysis.contentType} about ${analysis.subCategory}`,
     category: analysis.contentType,
     tags: [analysis.contentType, 'video'],
-    estimated_read_time: 3
+    estimated_read_time: 3,
+    contentAnalysis: analysis
   };
 }
 
