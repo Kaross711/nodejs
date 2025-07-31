@@ -220,23 +220,36 @@ async function downloadAndExtractAudio(url) {
     const timestamp = Date.now();
     const audioPath = path.join(tempDir, `audio_${timestamp}`);
     
-    // Platform-specific extraction strategies
+    // Enhanced Instagram-specific extraction strategies
     let extractionStrategies;
     
     switch (platform) {
       case 'instagram':
         extractionStrategies = [
+          // Strategy 1: Modern Instagram mobile
           {
-            name: 'instagram-mobile',
-            command: `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav --audio-quality 0 --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)" -o "${audioPath}.%(ext)s" "${url}"`
+            name: 'instagram-mobile-latest',
+            command: `yt-dlp -f "best[ext=mp4]" --extract-audio --audio-format wav --user-agent "Instagram 219.0.0.12.117 Android" --add-header "Accept:*/*" --add-header "Accept-Language:en-US,en;q=0.5" -o "${audioPath}.%(ext)s" "${url}"`
           },
+          // Strategy 2: Instagram web browser
           {
-            name: 'instagram-android',
-            command: `yt-dlp -f "worstaudio/worst" --extract-audio --audio-format wav --audio-quality 2 --user-agent "Mozilla/5.0 (Linux; Android 10)" -o "${audioPath}.%(ext)s" "${url}"`
+            name: 'instagram-web',
+            command: `yt-dlp -f "best" --extract-audio --audio-format wav --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15" --add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" -o "${audioPath}.%(ext)s" "${url}"`
           },
+          // Strategy 3: Simple Instagram extraction
           {
             name: 'instagram-simple',
-            command: `yt-dlp --extract-audio --audio-format wav --audio-quality 5 -o "${audioPath}.%(ext)s" "${url}"`
+            command: `yt-dlp --extract-audio --audio-format wav --no-check-certificate --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -o "${audioPath}.%(ext)s" "${url}"`
+          },
+          // Strategy 4: Instagram with cookies (if available)
+          {
+            name: 'instagram-fallback',
+            command: `yt-dlp -f "worst" --extract-audio --audio-format wav --audio-quality 5 --ignore-errors -o "${audioPath}.%(ext)s" "${url}"`
+          },
+          // Strategy 5: Ultra-basic extraction
+          {
+            name: 'instagram-ultra-basic',
+            command: `yt-dlp --extract-audio --audio-format wav --ignore-config --no-warnings --ignore-errors -o "${audioPath}.%(ext)s" "${url}"`
           }
         ];
         break;
@@ -245,11 +258,11 @@ async function downloadAndExtractAudio(url) {
         extractionStrategies = [
           {
             name: 'tiktok-mobile',
-            command: `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav --user-agent "Mozilla/5.0 (Linux; Android 10; SM-G973F)" -o "${audioPath}.%(ext)s" "${url}"`
+            command: `yt-dlp -f "best" --extract-audio --audio-format wav --user-agent "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36" -o "${audioPath}.%(ext)s" "${url}"`
           },
           {
             name: 'tiktok-simple',
-            command: `yt-dlp --extract-audio --audio-format wav -o "${audioPath}.%(ext)s" "${url}"`
+            command: `yt-dlp --extract-audio --audio-format wav --ignore-errors -o "${audioPath}.%(ext)s" "${url}"`
           }
         ];
         break;
@@ -258,11 +271,11 @@ async function downloadAndExtractAudio(url) {
         extractionStrategies = [
           {
             name: 'twitter-best',
-            command: `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav -o "${audioPath}.%(ext)s" "${url}"`
+            command: `yt-dlp -f "best" --extract-audio --audio-format wav --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -o "${audioPath}.%(ext)s" "${url}"`
           },
           {
             name: 'twitter-simple',
-            command: `yt-dlp --extract-audio --audio-format wav -o "${audioPath}.%(ext)s" "${url}"`
+            command: `yt-dlp --extract-audio --audio-format wav --ignore-errors -o "${audioPath}.%(ext)s" "${url}"`
           }
         ];
         break;
@@ -280,7 +293,7 @@ async function downloadAndExtractAudio(url) {
           },
           {
             name: 'youtube-simple',
-            command: `yt-dlp --extract-audio --audio-format wav -o "${audioPath}.%(ext)s" "${url}"`
+            command: `yt-dlp --extract-audio --audio-format wav --ignore-errors -o "${audioPath}.%(ext)s" "${url}"`
           }
         ];
         break;
@@ -288,6 +301,14 @@ async function downloadAndExtractAudio(url) {
 
     async function tryStrategy(strategyIndex = 0) {
       if (strategyIndex >= extractionStrategies.length) {
+        // SPECIAL: For Instagram, try one more desperate attempt
+        if (platform === 'instagram') {
+          console.log('Trying Instagram desperate fallback...');
+          return tryInstagramFallback(url, audioPath, timestamp).then(resolve).catch(() => {
+            reject(new Error(`All ${platform} audio extraction strategies failed. Instagram videos are often restricted. Try a different Instagram video or use a video from YouTube/TikTok instead.`));
+          });
+        }
+        
         reject(new Error(`All ${platform} audio extraction strategies failed. This ${platform} video might not be downloadable.`));
         return;
       }
@@ -295,13 +316,30 @@ async function downloadAndExtractAudio(url) {
       const strategy = extractionStrategies[strategyIndex];
       console.log(`Trying ${platform} extraction strategy ${strategyIndex + 1}/${extractionStrategies.length}: ${strategy.name}`);
 
-      exec(strategy.command, { maxBuffer: 1024 * 1024 * 50 }, async (error, stdout, stderr) => {
+      exec(strategy.command, { 
+        maxBuffer: 1024 * 1024 * 50,
+        timeout: 60000 // 60 second timeout
+      }, async (error, stdout, stderr) => {
         if (error) {
-          console.error(`${platform} strategy ${strategy.name} failed:`, stderr);
+          console.error(`${platform} strategy ${strategy.name} failed:`, stderr.substring(0, 500));
           
-          // Check if it's a format issue
-          if (stderr.includes('Requested format is not available') || stderr.includes('No video formats found')) {
-            console.log(`${platform} format not available, trying next strategy...`);
+          // Instagram-specific error handling
+          if (platform === 'instagram') {
+            if (stderr.includes('This content isn\'t available right now') || 
+                stderr.includes('The link you followed may be broken') ||
+                stderr.includes('Sorry, this page isn\'t available')) {
+              console.log('Instagram content not available, trying next strategy...');
+              return tryStrategy(strategyIndex + 1);
+            }
+          }
+          
+          // Generic error handling
+          if (stderr.includes('Requested format is not available') || 
+              stderr.includes('No video formats found') ||
+              stderr.includes('Unable to extract') ||
+              stderr.includes('HTTP Error 403') ||
+              stderr.includes('HTTP Error 404')) {
+            console.log(`${platform} strategy failed, trying next...`);
             return tryStrategy(strategyIndex + 1);
           }
           
@@ -330,6 +368,14 @@ async function downloadAndExtractAudio(url) {
 
           console.log(`✅ Extracted ${platform} audio: ${files[0]}, size: ${fileSizeMB.toFixed(2)}MB`);
 
+          // Check if file is valid (not too small)
+          if (fileSizeMB < 0.01) {
+            console.log(`${platform} file too small (${fileSizeMB.toFixed(3)}MB), probably empty. Trying next strategy...`);
+            // Clean up empty file
+            fs.unlinkSync(extractedFile);
+            return tryStrategy(strategyIndex + 1);
+          }
+
           // Check if file is under Whisper's 25MB limit
           if (fileSizeMB > 24) {
             console.log(`${platform} file too large (${fileSizeMB.toFixed(2)}MB), trying compression...`);
@@ -341,9 +387,6 @@ async function downloadAndExtractAudio(url) {
               console.log(`${platform} compression failed, trying next extraction strategy...`);
               return tryStrategy(strategyIndex + 1);
             }
-          } else if (fileSizeMB < 0.1) {
-            console.log(`${platform} file too small (${fileSizeMB.toFixed(2)}MB), trying next strategy...`);
-            return tryStrategy(strategyIndex + 1);
           } else {
             resolve(extractedFile);
           }
@@ -357,6 +400,48 @@ async function downloadAndExtractAudio(url) {
 
     // Start with first strategy
     tryStrategy(0);
+  });
+}
+
+// NEW: Instagram desperate fallback
+async function tryInstagramFallback(url, audioPath, timestamp) {
+  return new Promise((resolve, reject) => {
+    console.log('Trying Instagram desperate fallback method...');
+    
+    // Try to download video first, then extract audio with ffmpeg
+    const videoPath = audioPath.replace('audio_', 'video_') + '.mp4';
+    const command = `yt-dlp -f "best[height<=480]" --no-check-certificate --ignore-errors --user-agent "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" -o "${videoPath}" "${url}" && ffmpeg -i "${videoPath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${audioPath}_fallback.wav"`;
+    
+    exec(command, { 
+      maxBuffer: 1024 * 1024 * 100,
+      timeout: 120000 // 2 minute timeout
+    }, (error, stdout, stderr) => {
+      // Clean up video file if it exists
+      if (fs.existsSync(videoPath)) {
+        fs.unlinkSync(videoPath);
+      }
+      
+      if (error) {
+        console.error('Instagram fallback failed:', stderr.substring(0, 300));
+        reject(new Error('Instagram fallback extraction failed'));
+        return;
+      }
+      
+      const fallbackAudioPath = `${audioPath}_fallback.wav`;
+      if (fs.existsSync(fallbackAudioPath)) {
+        const fileStats = fs.statSync(fallbackAudioPath);
+        const fileSizeMB = fileStats.size / (1024 * 1024);
+        
+        if (fileSizeMB > 0.01) {
+          console.log(`✅ Instagram fallback successful: ${fileSizeMB.toFixed(2)}MB`);
+          resolve(fallbackAudioPath);
+        } else {
+          reject(new Error('Instagram fallback produced empty file'));
+        }
+      } else {
+        reject(new Error('Instagram fallback file not found'));
+      }
+    });
   });
 }
 
