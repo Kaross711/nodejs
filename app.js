@@ -82,7 +82,6 @@ app.post('/process-video', async (req, res) => {
 
 // FIXED: Extract video info with YouTube fixes
 async function extractVideoInfo(url) {
-  // Detect platform from URL
   const platform = detectPlatformFromUrl(url);
   console.log('Detected platform for extraction:', platform);
   
@@ -97,8 +96,8 @@ async function extractVideoInfo(url) {
       case 'tiktok':
         command = `yt-dlp --no-download --print-json --no-warnings --user-agent "Mozilla/5.0 (Linux; Android 10; SM-G973F)" "${url}"`;
         break;
-      case 'twitter':
-        command = `yt-dlp --no-download --print-json --no-warnings --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "${url}"`;
+      case 'facebook':
+        command = `yt-dlp --no-download --print-json --no-warnings --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" "${url}"`;
         break;
       case 'youtube':
       default:
@@ -113,6 +112,21 @@ async function extractVideoInfo(url) {
         console.error(`${platform} extraction error:`, stderr);
         
         // Platform-specific error handling
+        if (platform === 'facebook') {
+          if (stderr.includes('Sign in to confirm') || stderr.includes('login required')) {
+            reject(new Error('Facebook video requires login or is private. Please use a public Facebook video.'));
+            return;
+          }
+          if (stderr.includes('Video unavailable')) {
+            reject(new Error('Facebook video is unavailable or has been removed.'));
+            return;
+          }
+          if (stderr.includes('This content isn\'t available right now')) {
+            reject(new Error('Facebook video is not accessible. It may be private or restricted.'));
+            return;
+          }
+        }
+        
         if (platform === 'instagram') {
           if (stderr.includes('Sign in to confirm') || stderr.includes('login required')) {
             reject(new Error('Instagram video is private or requires login. Please use a public Instagram video.'));
@@ -168,18 +182,16 @@ async function extractVideoInfo(url) {
   });
 }
 
-
 function detectPlatformFromUrl(url) {
   const urlLower = url.toLowerCase();
   
   if (urlLower.includes('instagram.com')) return 'instagram';
   if (urlLower.includes('tiktok.com')) return 'tiktok';
-  if (urlLower.includes('twitter.com') || urlLower.includes('x.com')) return 'twitter';
+  if (urlLower.includes('facebook.com') || urlLower.includes('fb.watch') || urlLower.includes('fb.com')) return 'facebook';
   if (urlLower.includes('youtube.com') || urlLower.includes('youtu.be')) return 'youtube';
   
   return 'unknown';
 }
-
 // UPDATED: Fallback method with platform awareness
 async function extractVideoInfoFallback(url, platform = 'unknown') {
   return new Promise((resolve, reject) => {
@@ -223,30 +235,25 @@ async function downloadAndExtractAudio(url) {
     // Enhanced Instagram-specific extraction strategies
     let extractionStrategies;
     
-    switch (platform) {
+  switch (platform) {
       case 'instagram':
         extractionStrategies = [
-          // Strategy 1: Modern Instagram mobile
           {
             name: 'instagram-mobile-latest',
             command: `yt-dlp -f "best[ext=mp4]" --extract-audio --audio-format wav --user-agent "Instagram 219.0.0.12.117 Android" --add-header "Accept:*/*" --add-header "Accept-Language:en-US,en;q=0.5" -o "${audioPath}.%(ext)s" "${url}"`
           },
-          // Strategy 2: Instagram web browser
           {
             name: 'instagram-web',
             command: `yt-dlp -f "best" --extract-audio --audio-format wav --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15" --add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" -o "${audioPath}.%(ext)s" "${url}"`
           },
-          // Strategy 3: Simple Instagram extraction
           {
             name: 'instagram-simple',
             command: `yt-dlp --extract-audio --audio-format wav --no-check-certificate --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -o "${audioPath}.%(ext)s" "${url}"`
           },
-          // Strategy 4: Instagram with cookies (if available)
           {
             name: 'instagram-fallback',
             command: `yt-dlp -f "worst" --extract-audio --audio-format wav --audio-quality 5 --ignore-errors -o "${audioPath}.%(ext)s" "${url}"`
           },
-          // Strategy 5: Ultra-basic extraction
           {
             name: 'instagram-ultra-basic',
             command: `yt-dlp --extract-audio --audio-format wav --ignore-config --no-warnings --ignore-errors -o "${audioPath}.%(ext)s" "${url}"`
@@ -267,15 +274,27 @@ async function downloadAndExtractAudio(url) {
         ];
         break;
         
-      case 'twitter':
+      case 'facebook':
         extractionStrategies = [
+          // Strategy 1: Facebook with Chrome user agent
           {
-            name: 'twitter-best',
-            command: `yt-dlp -f "best" --extract-audio --audio-format wav --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -o "${audioPath}.%(ext)s" "${url}"`
+            name: 'facebook-chrome',
+            command: `yt-dlp -f "best[height<=720]" --extract-audio --audio-format wav --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" -o "${audioPath}.%(ext)s" "${url}"`
           },
+          // Strategy 2: Facebook mobile
           {
-            name: 'twitter-simple',
-            command: `yt-dlp --extract-audio --audio-format wav --ignore-errors -o "${audioPath}.%(ext)s" "${url}"`
+            name: 'facebook-mobile',
+            command: `yt-dlp -f "best" --extract-audio --audio-format wav --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15" --add-header "Accept:text/html,application/xhtml+xml" -o "${audioPath}.%(ext)s" "${url}"`
+          },
+          // Strategy 3: Facebook simple
+          {
+            name: 'facebook-simple',
+            command: `yt-dlp --extract-audio --audio-format wav --no-check-certificate --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -o "${audioPath}.%(ext)s" "${url}"`
+          },
+          // Strategy 4: Facebook with cookies bypass
+          {
+            name: 'facebook-fallback',
+            command: `yt-dlp -f "worst" --extract-audio --audio-format wav --audio-quality 3 --ignore-errors --no-check-certificate -o "${audioPath}.%(ext)s" "${url}"`
           }
         ];
         break;
