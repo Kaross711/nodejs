@@ -83,8 +83,8 @@ app.post('/process-video', async (req, res) => {
 // FIXED: Extract video info with YouTube fixes
 async function extractVideoInfo(url) {
   return new Promise((resolve, reject) => {
-    // IMPROVED: Better yt-dlp command with user agent and YouTube fixes
-    const command = `yt-dlp --no-download --print-json --no-warnings --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --extractor-args "youtube:player_client=android" "${url}"`;
+    // IMPROVED: More flexible format extraction without specifying exact formats
+    const command = `yt-dlp --no-download --print-json --no-warnings --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --extractor-args "youtube:player_client=android,web" "${url}"`;
     
     exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
       if (error) {
@@ -105,6 +105,12 @@ async function extractVideoInfo(url) {
           reject(new Error('Video is unavailable or has been removed.'));
           return;
         }
+
+        if (stderr.includes('Requested format is not available')) {
+          // Try with simpler approach
+          console.log('Retrying with basic format selection...');
+          return extractVideoInfoFallback(url).then(resolve).catch(reject);
+        }
         
         reject(new Error(`Failed to extract video info: ${stderr}`));
         return;
@@ -122,8 +128,34 @@ async function extractVideoInfo(url) {
           upload_date: info.upload_date || null
         });
       } catch (parseError) {
-        reject(new Error('Failed to parse video info - video might be unavailable'));
+        console.error('Parse error, trying fallback...');
+        extractVideoInfoFallback(url).then(resolve).catch(reject);
       }
+    });
+  });
+}
+
+async function extractVideoInfoFallback(url) {
+  return new Promise((resolve, reject) => {
+    // Ultra-simple approach - just get basic info
+    const command = `yt-dlp --no-download --get-title --get-duration --get-thumbnail --no-warnings "${url}"`;
+    
+    exec(command, { maxBuffer: 1024 * 1024 * 5 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(`Fallback extraction failed: ${stderr}`));
+        return;
+      }
+
+      const lines = stdout.trim().split('\n');
+      resolve({
+        title: lines[0] || 'YouTube Video',
+        duration: null, // Will be parsed from duration string if needed
+        thumbnail: lines[2] || null,
+        uploader: 'YouTube',
+        description: '',
+        view_count: null,
+        upload_date: null
+      });
     });
   });
 }
@@ -139,38 +171,50 @@ async function downloadAndExtractAudio(url) {
     const timestamp = Date.now();
     const audioPath = path.join(tempDir, `audio_${timestamp}`);
     
-    // Multiple fallback strategies for audio extraction
+    // IMPROVED: More flexible extraction strategies
     const extractionStrategies = [
-      // Strategy 1: High quality with YouTube fixes
+      // Strategy 1: Best available audio, any format
       {
-        name: 'high-quality-youtube',
-        command: `yt-dlp -f "bestaudio[filesize<20M]/best[filesize<20M]" --extract-audio --audio-format wav --audio-quality 0 --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --extractor-args "youtube:player_client=android" -o "${audioPath}.%(ext)s" "${url}"`
+        name: 'best-audio-any',
+        command: `yt-dlp -f "bestaudio" --extract-audio --audio-format wav --audio-quality 0 --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --extractor-args "youtube:player_client=android" -o "${audioPath}.%(ext)s" "${url}"`
       },
-      // Strategy 2: Medium quality with mobile client
+      // Strategy 2: Any audio format, convert to wav
       {
-        name: 'medium-quality-mobile',
-        command: `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav --audio-quality 2 --user-agent "Mozilla/5.0 (Linux; Android 10; SM-G973F)" --extractor-args "youtube:player_client=android" -o "${audioPath}.%(ext)s" "${url}"`
+        name: 'any-audio-convert',
+        command: `yt-dlp -f "worstaudio/worst" --extract-audio --audio-format wav --audio-quality 2 --user-agent "Mozilla/5.0 (Linux; Android 10)" --extractor-args "youtube:player_client=android" -o "${audioPath}.%(ext)s" "${url}"`
       },
-      // Strategy 3: Compressed with iOS client
+      // Strategy 3: Download best quality and extract audio with ffmpeg
       {
-        name: 'compressed-ios',
-        command: `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav --audio-quality 5 --postprocessor-args "ffmpeg:-ac 1 -ar 16000" --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)" --extractor-args "youtube:player_client=ios" -o "${audioPath}.%(ext)s" "${url}"`
+        name: 'best-video-extract-audio',
+        command: `yt-dlp -f "best[height<=720]" --extract-audio --audio-format wav --audio-quality 5 --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)" -o "${audioPath}.%(ext)s" "${url}"`
+      },
+      // Strategy 4: Ultra-simple - just get anything
+      {
+        name: 'ultra-simple',
+        command: `yt-dlp --extract-audio --audio-format wav -o "${audioPath}.%(ext)s" "${url}"`
       }
     ];
 
     async function tryStrategy(strategyIndex = 0) {
       if (strategyIndex >= extractionStrategies.length) {
-        reject(new Error('All audio extraction strategies failed'));
+        reject(new Error('All audio extraction strategies failed. This video might not be downloadable.'));
         return;
       }
 
       const strategy = extractionStrategies[strategyIndex];
-      console.log(`Trying extraction strategy: ${strategy.name}`);
+      console.log(`Trying extraction strategy ${strategyIndex + 1}/${extractionStrategies.length}: ${strategy.name}`);
 
       exec(strategy.command, { maxBuffer: 1024 * 1024 * 50 }, async (error, stdout, stderr) => {
         if (error) {
           console.error(`Strategy ${strategy.name} failed:`, stderr);
-          // Try next strategy
+          
+          // Check if it's a format issue
+          if (stderr.includes('Requested format is not available') || stderr.includes('No video formats found')) {
+            console.log('Format not available, trying next strategy...');
+            return tryStrategy(strategyIndex + 1);
+          }
+          
+          // For other errors, also try next strategy
           return tryStrategy(strategyIndex + 1);
         }
 
@@ -184,10 +228,17 @@ async function downloadAndExtractAudio(url) {
           }
 
           const extractedFile = path.join(tempDir, files[0]);
+          
+          // Check if file exists and has content
+          if (!fs.existsSync(extractedFile)) {
+            console.log(`File doesn't exist, trying next strategy...`);
+            return tryStrategy(strategyIndex + 1);
+          }
+
           const fileStats = fs.statSync(extractedFile);
           const fileSizeMB = fileStats.size / (1024 * 1024);
 
-          console.log(`Extracted audio: ${files[0]}, size: ${fileSizeMB.toFixed(2)}MB`);
+          console.log(`✅ Extracted audio: ${files[0]}, size: ${fileSizeMB.toFixed(2)}MB`);
 
           // Check if file is under Whisper's 25MB limit
           if (fileSizeMB > 24) {
@@ -199,8 +250,13 @@ async function downloadAndExtractAudio(url) {
               resolve(compressedPath);
             } else {
               // If compression fails, try next strategy
+              console.log('Compression failed, trying next extraction strategy...');
               return tryStrategy(strategyIndex + 1);
             }
+          } else if (fileSizeMB < 0.1) {
+            // File too small, probably failed
+            console.log(`File too small (${fileSizeMB.toFixed(2)}MB), trying next strategy...`);
+            return tryStrategy(strategyIndex + 1);
           } else {
             resolve(extractedFile);
           }
