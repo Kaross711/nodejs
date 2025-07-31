@@ -1,4 +1,4 @@
-// server.js - Complete Bulletproof Railway Backend voor Video Processing
+// server.js - Complete Railway Backend met YouTube & Audio Fixes
 const express = require('express');
 const cors = require('cors');
 const { exec } = require('child_process');
@@ -16,7 +16,7 @@ app.use(express.json());
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Bulletproof video processing server is running' });
+  res.json({ status: 'OK', message: 'Bulletproof video processing server with YouTube fixes is running' });
 });
 
 // Main video processing endpoint
@@ -36,7 +36,7 @@ app.post('/process-video', async (req, res) => {
     const videoInfo = await extractVideoInfo(videoUrl);
     console.log('Video info extracted:', videoInfo.title);
 
-    // Step 2: Download and extract audio
+    // Step 2: Download and extract audio with compression
     const audioPath = await downloadAndExtractAudio(videoUrl);
     console.log('Audio extracted to:', audioPath);
 
@@ -80,14 +80,32 @@ app.post('/process-video', async (req, res) => {
   }
 });
 
-// Extract video info using yt-dlp
+// FIXED: Extract video info with YouTube fixes
 async function extractVideoInfo(url) {
   return new Promise((resolve, reject) => {
-    const command = `yt-dlp --no-download --print-json --no-warnings "${url}"`;
+    // IMPROVED: Better yt-dlp command with user agent and YouTube fixes
+    const command = `yt-dlp --no-download --print-json --no-warnings --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --extractor-args "youtube:player_client=android" "${url}"`;
     
     exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
       if (error) {
         console.error('yt-dlp error:', stderr);
+        
+        // Handle specific YouTube errors
+        if (stderr.includes('Sign in to confirm') || stderr.includes('login required')) {
+          reject(new Error('YouTube video requires login or is age-restricted. Try a different video or make sure it\'s publicly accessible.'));
+          return;
+        }
+        
+        if (stderr.includes('Private video')) {
+          reject(new Error('This video is private. Please use a public video.'));
+          return;
+        }
+        
+        if (stderr.includes('Video unavailable')) {
+          reject(new Error('Video is unavailable or has been removed.'));
+          return;
+        }
+        
         reject(new Error(`Failed to extract video info: ${stderr}`));
         return;
       }
@@ -104,13 +122,13 @@ async function extractVideoInfo(url) {
           upload_date: info.upload_date || null
         });
       } catch (parseError) {
-        reject(new Error('Failed to parse video info'));
+        reject(new Error('Failed to parse video info - video might be unavailable'));
       }
     });
   });
 }
 
-// Download video and extract audio
+// FIXED: Download and extract audio with compression strategies
 async function downloadAndExtractAudio(url) {
   return new Promise((resolve, reject) => {
     const tempDir = path.join(__dirname, 'temp');
@@ -119,39 +137,139 @@ async function downloadAndExtractAudio(url) {
     }
 
     const timestamp = Date.now();
-    const audioPath = path.join(tempDir, `audio_${timestamp}.wav`);
+    const audioPath = path.join(tempDir, `audio_${timestamp}`);
     
-    const command = `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav --audio-quality 0 -o "${audioPath}" "${url}"`;
-    
-    exec(command, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
-      if (error) {
-        console.error('Audio extraction error:', stderr);
-        reject(new Error(`Failed to extract audio: ${stderr}`));
+    // Multiple fallback strategies for audio extraction
+    const extractionStrategies = [
+      // Strategy 1: High quality with YouTube fixes
+      {
+        name: 'high-quality-youtube',
+        command: `yt-dlp -f "bestaudio[filesize<20M]/best[filesize<20M]" --extract-audio --audio-format wav --audio-quality 0 --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --extractor-args "youtube:player_client=android" -o "${audioPath}.%(ext)s" "${url}"`
+      },
+      // Strategy 2: Medium quality with mobile client
+      {
+        name: 'medium-quality-mobile',
+        command: `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav --audio-quality 2 --user-agent "Mozilla/5.0 (Linux; Android 10; SM-G973F)" --extractor-args "youtube:player_client=android" -o "${audioPath}.%(ext)s" "${url}"`
+      },
+      // Strategy 3: Compressed with iOS client
+      {
+        name: 'compressed-ios',
+        command: `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav --audio-quality 5 --postprocessor-args "ffmpeg:-ac 1 -ar 16000" --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)" --extractor-args "youtube:player_client=ios" -o "${audioPath}.%(ext)s" "${url}"`
+      }
+    ];
+
+    async function tryStrategy(strategyIndex = 0) {
+      if (strategyIndex >= extractionStrategies.length) {
+        reject(new Error('All audio extraction strategies failed'));
         return;
       }
 
-      const actualAudioPath = audioPath.replace('.wav', '.wav');
-      
-      if (fs.existsSync(actualAudioPath)) {
-        resolve(actualAudioPath);
-      } else {
-        const files = fs.readdirSync(tempDir).filter(f => f.startsWith(`audio_${timestamp}`));
-        if (files.length > 0) {
-          resolve(path.join(tempDir, files[0]));
-        } else {
-          reject(new Error('Audio file not found after extraction'));
+      const strategy = extractionStrategies[strategyIndex];
+      console.log(`Trying extraction strategy: ${strategy.name}`);
+
+      exec(strategy.command, { maxBuffer: 1024 * 1024 * 50 }, async (error, stdout, stderr) => {
+        if (error) {
+          console.error(`Strategy ${strategy.name} failed:`, stderr);
+          // Try next strategy
+          return tryStrategy(strategyIndex + 1);
         }
+
+        try {
+          // Find the extracted audio file
+          const files = fs.readdirSync(tempDir).filter(f => f.startsWith(`audio_${timestamp}`));
+          
+          if (files.length === 0) {
+            console.log(`No files found for strategy ${strategy.name}, trying next...`);
+            return tryStrategy(strategyIndex + 1);
+          }
+
+          const extractedFile = path.join(tempDir, files[0]);
+          const fileStats = fs.statSync(extractedFile);
+          const fileSizeMB = fileStats.size / (1024 * 1024);
+
+          console.log(`Extracted audio: ${files[0]}, size: ${fileSizeMB.toFixed(2)}MB`);
+
+          // Check if file is under Whisper's 25MB limit
+          if (fileSizeMB > 24) {
+            console.log(`File too large (${fileSizeMB.toFixed(2)}MB), trying compression...`);
+            
+            // Try to compress further
+            const compressedPath = await compressAudio(extractedFile, timestamp);
+            if (compressedPath) {
+              resolve(compressedPath);
+            } else {
+              // If compression fails, try next strategy
+              return tryStrategy(strategyIndex + 1);
+            }
+          } else {
+            resolve(extractedFile);
+          }
+
+        } catch (fileError) {
+          console.error(`File processing error for strategy ${strategy.name}:`, fileError);
+          return tryStrategy(strategyIndex + 1);
+        }
+      });
+    }
+
+    // Start with first strategy
+    tryStrategy(0);
+  });
+}
+
+// NEW: Additional compression function
+async function compressAudio(inputPath, timestamp) {
+  return new Promise((resolve) => {
+    const outputPath = inputPath.replace(/\.[^.]+$/, '_compressed.wav');
+    
+    // Aggressive compression: mono, 16kHz, lower bitrate
+    const compressionCommand = `ffmpeg -i "${inputPath}" -ac 1 -ar 16000 -b:a 32k "${outputPath}"`;
+    
+    exec(compressionCommand, (error, stdout, stderr) => {
+      if (error) {
+        console.error('Compression failed:', stderr);
+        resolve(null);
+        return;
+      }
+
+      try {
+        const fileStats = fs.statSync(outputPath);
+        const fileSizeMB = fileStats.size / (1024 * 1024);
+        
+        console.log(`Compressed audio size: ${fileSizeMB.toFixed(2)}MB`);
+        
+        if (fileSizeMB < 24) {
+          // Clean up original file
+          fs.unlinkSync(inputPath);
+          resolve(outputPath);
+        } else {
+          console.log('Compression still too large');
+          resolve(null);
+        }
+      } catch (err) {
+        console.error('Compression check failed:', err);
+        resolve(null);
       }
     });
   });
 }
 
-// Transcribe audio using OpenAI Whisper - AUTO LANGUAGE DETECTION
+// UPDATED: Transcribe with better error handling
 async function transcribeAudio(audioPath) {
   const openaiApiKey = process.env.OPENAI_API_KEY;
   
   if (!openaiApiKey) {
     throw new Error('OPENAI_API_KEY environment variable not set');
+  }
+
+  // Pre-check file size
+  const fileStats = fs.statSync(audioPath);
+  const fileSizeMB = fileStats.size / (1024 * 1024);
+  
+  console.log(`Transcribing audio file: ${fileSizeMB.toFixed(2)}MB`);
+  
+  if (fileSizeMB > 24) {
+    throw new Error(`Audio file too large for Whisper API: ${fileSizeMB.toFixed(2)}MB (max 25MB)`);
   }
 
   try {
@@ -171,6 +289,12 @@ async function transcribeAudio(audioPath) {
 
     if (!response.ok) {
       const errorText = await response.text();
+      
+      // Handle specific 413 error
+      if (response.status === 413) {
+        throw new Error(`Audio file too large for Whisper API. Try a shorter video or lower quality source.`);
+      }
+      
       throw new Error(`Whisper API error: ${response.status} ${errorText}`);
     }
 
@@ -727,7 +851,7 @@ Focus on practical value even if some details are unclear.`;
 }
 
 app.listen(PORT, () => {
-  console.log(`Bulletproof video processing server running on port ${PORT}`);
+  console.log(`Bulletproof video processing server with YouTube fixes running on port ${PORT}`);
   console.log('Health check: GET /health');
   console.log('Process video: POST /process-video');
 });
