@@ -82,37 +82,70 @@ app.post('/process-video', async (req, res) => {
 
 // FIXED: Extract video info with YouTube fixes
 async function extractVideoInfo(url) {
+  // Detect platform from URL
+  const platform = detectPlatformFromUrl(url);
+  console.log('Detected platform for extraction:', platform);
+  
   return new Promise((resolve, reject) => {
-    // IMPROVED: More flexible format extraction without specifying exact formats
-    const command = `yt-dlp --no-download --print-json --no-warnings --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --extractor-args "youtube:player_client=android,web" "${url}"`;
+    let command;
+    
+    // Platform-specific commands
+    switch (platform) {
+      case 'instagram':
+        command = `yt-dlp --no-download --print-json --no-warnings --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15" "${url}"`;
+        break;
+      case 'tiktok':
+        command = `yt-dlp --no-download --print-json --no-warnings --user-agent "Mozilla/5.0 (Linux; Android 10; SM-G973F)" "${url}"`;
+        break;
+      case 'twitter':
+        command = `yt-dlp --no-download --print-json --no-warnings --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "${url}"`;
+        break;
+      case 'youtube':
+      default:
+        command = `yt-dlp --no-download --print-json --no-warnings --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --extractor-args "youtube:player_client=android,web" "${url}"`;
+        break;
+    }
+    
+    console.log('Using extraction command for', platform);
     
     exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
       if (error) {
-        console.error('yt-dlp error:', stderr);
+        console.error(`${platform} extraction error:`, stderr);
         
-        // Handle specific YouTube errors
+        // Platform-specific error handling
+        if (platform === 'instagram') {
+          if (stderr.includes('Sign in to confirm') || stderr.includes('login required')) {
+            reject(new Error('Instagram video is private or requires login. Please use a public Instagram video.'));
+            return;
+          }
+          if (stderr.includes('Video unavailable')) {
+            reject(new Error('Instagram video is unavailable or has been removed.'));
+            return;
+          }
+        }
+        
+        // Generic fallback
         if (stderr.includes('Sign in to confirm') || stderr.includes('login required')) {
-          reject(new Error('YouTube video requires login or is age-restricted. Try a different video or make sure it\'s publicly accessible.'));
+          reject(new Error(`${platform} video requires login or is age-restricted. Try a different video or make sure it's publicly accessible.`));
           return;
         }
         
         if (stderr.includes('Private video')) {
-          reject(new Error('This video is private. Please use a public video.'));
+          reject(new Error(`This ${platform} video is private. Please use a public video.`));
           return;
         }
         
         if (stderr.includes('Video unavailable')) {
-          reject(new Error('Video is unavailable or has been removed.'));
+          reject(new Error(`${platform} video is unavailable or has been removed.`));
           return;
         }
 
         if (stderr.includes('Requested format is not available')) {
-          // Try with simpler approach
-          console.log('Retrying with basic format selection...');
-          return extractVideoInfoFallback(url).then(resolve).catch(reject);
+          console.log(`Retrying ${platform} with fallback method...`);
+          return extractVideoInfoFallback(url, platform).then(resolve).catch(reject);
         }
         
-        reject(new Error(`Failed to extract video info: ${stderr}`));
+        reject(new Error(`Failed to extract ${platform} video info: ${stderr}`));
         return;
       }
 
@@ -129,29 +162,42 @@ async function extractVideoInfo(url) {
         });
       } catch (parseError) {
         console.error('Parse error, trying fallback...');
-        extractVideoInfoFallback(url).then(resolve).catch(reject);
+        extractVideoInfoFallback(url, platform).then(resolve).catch(reject);
       }
     });
   });
 }
 
-async function extractVideoInfoFallback(url) {
+
+function detectPlatformFromUrl(url) {
+  const urlLower = url.toLowerCase();
+  
+  if (urlLower.includes('instagram.com')) return 'instagram';
+  if (urlLower.includes('tiktok.com')) return 'tiktok';
+  if (urlLower.includes('twitter.com') || urlLower.includes('x.com')) return 'twitter';
+  if (urlLower.includes('youtube.com') || urlLower.includes('youtu.be')) return 'youtube';
+  
+  return 'unknown';
+}
+
+// UPDATED: Fallback method with platform awareness
+async function extractVideoInfoFallback(url, platform = 'unknown') {
   return new Promise((resolve, reject) => {
     // Ultra-simple approach - just get basic info
     const command = `yt-dlp --no-download --get-title --get-duration --get-thumbnail --no-warnings "${url}"`;
     
     exec(command, { maxBuffer: 1024 * 1024 * 5 }, (error, stdout, stderr) => {
       if (error) {
-        reject(new Error(`Fallback extraction failed: ${stderr}`));
+        reject(new Error(`Fallback extraction failed for ${platform}: ${stderr}`));
         return;
       }
 
       const lines = stdout.trim().split('\n');
       resolve({
-        title: lines[0] || 'YouTube Video',
-        duration: null, // Will be parsed from duration string if needed
+        title: lines[0] || `${platform} Video`,
+        duration: null,
         thumbnail: lines[2] || null,
-        uploader: 'YouTube',
+        uploader: platform,
         description: '',
         view_count: null,
         upload_date: null
@@ -162,6 +208,9 @@ async function extractVideoInfoFallback(url) {
 
 // FIXED: Download and extract audio with compression strategies
 async function downloadAndExtractAudio(url) {
+  const platform = detectPlatformFromUrl(url);
+  console.log('Detected platform for audio extraction:', platform);
+  
   return new Promise((resolve, reject) => {
     const tempDir = path.join(__dirname, 'temp');
     if (!fs.existsSync(tempDir)) {
@@ -171,46 +220,88 @@ async function downloadAndExtractAudio(url) {
     const timestamp = Date.now();
     const audioPath = path.join(tempDir, `audio_${timestamp}`);
     
-    // IMPROVED: More flexible extraction strategies
-    const extractionStrategies = [
-      // Strategy 1: Best available audio, any format
-      {
-        name: 'best-audio-any',
-        command: `yt-dlp -f "bestaudio" --extract-audio --audio-format wav --audio-quality 0 --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" --extractor-args "youtube:player_client=android" -o "${audioPath}.%(ext)s" "${url}"`
-      },
-      // Strategy 2: Any audio format, convert to wav
-      {
-        name: 'any-audio-convert',
-        command: `yt-dlp -f "worstaudio/worst" --extract-audio --audio-format wav --audio-quality 2 --user-agent "Mozilla/5.0 (Linux; Android 10)" --extractor-args "youtube:player_client=android" -o "${audioPath}.%(ext)s" "${url}"`
-      },
-      // Strategy 3: Download best quality and extract audio with ffmpeg
-      {
-        name: 'best-video-extract-audio',
-        command: `yt-dlp -f "best[height<=720]" --extract-audio --audio-format wav --audio-quality 5 --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)" -o "${audioPath}.%(ext)s" "${url}"`
-      },
-      // Strategy 4: Ultra-simple - just get anything
-      {
-        name: 'ultra-simple',
-        command: `yt-dlp --extract-audio --audio-format wav -o "${audioPath}.%(ext)s" "${url}"`
-      }
-    ];
+    // Platform-specific extraction strategies
+    let extractionStrategies;
+    
+    switch (platform) {
+      case 'instagram':
+        extractionStrategies = [
+          {
+            name: 'instagram-mobile',
+            command: `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav --audio-quality 0 --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)" -o "${audioPath}.%(ext)s" "${url}"`
+          },
+          {
+            name: 'instagram-android',
+            command: `yt-dlp -f "worstaudio/worst" --extract-audio --audio-format wav --audio-quality 2 --user-agent "Mozilla/5.0 (Linux; Android 10)" -o "${audioPath}.%(ext)s" "${url}"`
+          },
+          {
+            name: 'instagram-simple',
+            command: `yt-dlp --extract-audio --audio-format wav --audio-quality 5 -o "${audioPath}.%(ext)s" "${url}"`
+          }
+        ];
+        break;
+        
+      case 'tiktok':
+        extractionStrategies = [
+          {
+            name: 'tiktok-mobile',
+            command: `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav --user-agent "Mozilla/5.0 (Linux; Android 10; SM-G973F)" -o "${audioPath}.%(ext)s" "${url}"`
+          },
+          {
+            name: 'tiktok-simple',
+            command: `yt-dlp --extract-audio --audio-format wav -o "${audioPath}.%(ext)s" "${url}"`
+          }
+        ];
+        break;
+        
+      case 'twitter':
+        extractionStrategies = [
+          {
+            name: 'twitter-best',
+            command: `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav -o "${audioPath}.%(ext)s" "${url}"`
+          },
+          {
+            name: 'twitter-simple',
+            command: `yt-dlp --extract-audio --audio-format wav -o "${audioPath}.%(ext)s" "${url}"`
+          }
+        ];
+        break;
+        
+      case 'youtube':
+      default:
+        extractionStrategies = [
+          {
+            name: 'youtube-android',
+            command: `yt-dlp -f "bestaudio[filesize<20M]/best[filesize<20M]" --extract-audio --audio-format wav --audio-quality 0 --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" --extractor-args "youtube:player_client=android" -o "${audioPath}.%(ext)s" "${url}"`
+          },
+          {
+            name: 'youtube-mobile',
+            command: `yt-dlp -f "bestaudio/best" --extract-audio --audio-format wav --audio-quality 2 --user-agent "Mozilla/5.0 (Linux; Android 10)" --extractor-args "youtube:player_client=android" -o "${audioPath}.%(ext)s" "${url}"`
+          },
+          {
+            name: 'youtube-simple',
+            command: `yt-dlp --extract-audio --audio-format wav -o "${audioPath}.%(ext)s" "${url}"`
+          }
+        ];
+        break;
+    }
 
     async function tryStrategy(strategyIndex = 0) {
       if (strategyIndex >= extractionStrategies.length) {
-        reject(new Error('All audio extraction strategies failed. This video might not be downloadable.'));
+        reject(new Error(`All ${platform} audio extraction strategies failed. This ${platform} video might not be downloadable.`));
         return;
       }
 
       const strategy = extractionStrategies[strategyIndex];
-      console.log(`Trying extraction strategy ${strategyIndex + 1}/${extractionStrategies.length}: ${strategy.name}`);
+      console.log(`Trying ${platform} extraction strategy ${strategyIndex + 1}/${extractionStrategies.length}: ${strategy.name}`);
 
       exec(strategy.command, { maxBuffer: 1024 * 1024 * 50 }, async (error, stdout, stderr) => {
         if (error) {
-          console.error(`Strategy ${strategy.name} failed:`, stderr);
+          console.error(`${platform} strategy ${strategy.name} failed:`, stderr);
           
           // Check if it's a format issue
           if (stderr.includes('Requested format is not available') || stderr.includes('No video formats found')) {
-            console.log('Format not available, trying next strategy...');
+            console.log(`${platform} format not available, trying next strategy...`);
             return tryStrategy(strategyIndex + 1);
           }
           
@@ -223,46 +314,42 @@ async function downloadAndExtractAudio(url) {
           const files = fs.readdirSync(tempDir).filter(f => f.startsWith(`audio_${timestamp}`));
           
           if (files.length === 0) {
-            console.log(`No files found for strategy ${strategy.name}, trying next...`);
+            console.log(`No files found for ${platform} strategy ${strategy.name}, trying next...`);
             return tryStrategy(strategyIndex + 1);
           }
 
           const extractedFile = path.join(tempDir, files[0]);
           
-          // Check if file exists and has content
           if (!fs.existsSync(extractedFile)) {
-            console.log(`File doesn't exist, trying next strategy...`);
+            console.log(`${platform} file doesn't exist, trying next strategy...`);
             return tryStrategy(strategyIndex + 1);
           }
 
           const fileStats = fs.statSync(extractedFile);
           const fileSizeMB = fileStats.size / (1024 * 1024);
 
-          console.log(`✅ Extracted audio: ${files[0]}, size: ${fileSizeMB.toFixed(2)}MB`);
+          console.log(`✅ Extracted ${platform} audio: ${files[0]}, size: ${fileSizeMB.toFixed(2)}MB`);
 
           // Check if file is under Whisper's 25MB limit
           if (fileSizeMB > 24) {
-            console.log(`File too large (${fileSizeMB.toFixed(2)}MB), trying compression...`);
+            console.log(`${platform} file too large (${fileSizeMB.toFixed(2)}MB), trying compression...`);
             
-            // Try to compress further
             const compressedPath = await compressAudio(extractedFile, timestamp);
             if (compressedPath) {
               resolve(compressedPath);
             } else {
-              // If compression fails, try next strategy
-              console.log('Compression failed, trying next extraction strategy...');
+              console.log(`${platform} compression failed, trying next extraction strategy...`);
               return tryStrategy(strategyIndex + 1);
             }
           } else if (fileSizeMB < 0.1) {
-            // File too small, probably failed
-            console.log(`File too small (${fileSizeMB.toFixed(2)}MB), trying next strategy...`);
+            console.log(`${platform} file too small (${fileSizeMB.toFixed(2)}MB), trying next strategy...`);
             return tryStrategy(strategyIndex + 1);
           } else {
             resolve(extractedFile);
           }
 
         } catch (fileError) {
-          console.error(`File processing error for strategy ${strategy.name}:`, fileError);
+          console.error(`${platform} file processing error for strategy ${strategy.name}:`, fileError);
           return tryStrategy(strategyIndex + 1);
         }
       });
