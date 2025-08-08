@@ -1,4 +1,7 @@
-// app.js — Railway worker (CommonJS) with audio-only, chunked ASR, router-ish analysis, and progress callbacks.
+// app.js — Railway worker (CommonJS) with audio-only + chunked ASR + progress callbacks
+// Includes "schema-lite" summaries and normalization to avoid UI crashes on Tutorials/Recipes.
+// Drop this in your Railway worker repo as app.js and redeploy.
+
 const express = require('express');
 const cors = require('cors');
 const { exec } = require('child_process');
@@ -14,27 +17,30 @@ const PORT = process.env.PORT || 3000;
 const EDGE_PROGRESS_URL = process.env.EDGE_PROGRESS_URL || '';
 const WORKER_TOKEN = process.env.WORKER_TOKEN || '';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
+const ASR_MODEL = process.env.ASR_MODEL || 'whisper-1';
+
 if (!OPENAI_API_KEY) console.warn('[WARN] Missing OPENAI_API_KEY');
 if (!EDGE_PROGRESS_URL) console.warn('[WARN] Missing EDGE_PROGRESS_URL');
 if (!WORKER_TOKEN) console.warn('[WARN] Missing WORKER_TOKEN');
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 async function postProgress(summaryId, stage, percent, note, partial) {
-  if (!EDGE_PROGRESS_URL || !WORKER_TOKEN) return;
+  if (!EDGE_PROGRESS_URL || !WORKER_TOKEN || !summaryId) return;
   try {
     await fetch(EDGE_PROGRESS_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-worker-token': WORKER_TOKEN },
       body: JSON.stringify({ summaryId, stage, percent, note, partial })
     });
-  } catch (e) { console.error('postProgress failed:', e.message || e); }
+  } catch (e) { console.error('postProgress failed:', e?.message || e); }
 }
 
-// ---------- Helpers from your existing code (with minor tweaks) ----------
+// ---------------- Video helpers ----------------
 function detectPlatformFromUrl(url) {
   const u = (url || '').toLowerCase();
   if (u.includes('instagram.com')) return 'instagram';
@@ -46,7 +52,7 @@ function detectPlatformFromUrl(url) {
 
 async function extractVideoInfo(url) {
   const platform = detectPlatformFromUrl(url);
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     let command;
     switch (platform) {
       case 'instagram':
@@ -79,7 +85,7 @@ async function extractVideoInfo(url) {
 }
 
 async function downloadAndExtractAudio(url) {
-  // Returns a WAV path
+  // Produces a WAV path in a temp dir
   const tempDir = path.join(os.tmpdir(), 'audio-' + Date.now());
   fs.mkdirSync(tempDir, { recursive: true });
   const outBase = path.join(tempDir, 'audio');
@@ -109,9 +115,9 @@ async function downloadAndExtractAudio(url) {
   for (const cmd of strategies) {
     try {
       await new Promise((resolve, reject) => {
-        exec(cmd, { maxBuffer: 1024 * 1024 * 100 }, (err) => (err ? reject(err) : resolve()));
+        exec(cmd, { maxBuffer: 1024 * 1024 * 200, timeout: 120000 }, (err) => (err ? reject(err) : resolve()));
       });
-      // Find produced file
+      // Find a produced file
       const files = fs.readdirSync(tempDir).filter(f => f.startsWith('audio_') || f.startsWith('audio.') || f.startsWith('audio'));
       if (files.length) return path.join(tempDir, files[0]);
     } catch (e) {
@@ -145,7 +151,7 @@ async function segmentAudio(wavPath, segmentSec = 60) {
 async function transcribeChunk(filePath) {
   const formData = new FormData();
   formData.append('file', fs.createReadStream(filePath));
-  formData.append('model', 'whisper-1');
+  formData.append('model', ASR_MODEL); // 'whisper-1'
   const resp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}`, ...formData.getHeaders() },
@@ -159,44 +165,119 @@ async function transcribeChunk(filePath) {
   return json.text || '';
 }
 
-// Your existing analysis+summary (kept) ----------------------
+// --------------- Router + Schema-lite ---------------
+function firstChars(t, n) {
+  return (t || '').slice(0, n);
+}
+
 async function analyzeContentType(transcription, videoInfo) {
-  const prompt = `You are an expert content analyst. Analyze this video transcript and determine the content type.
+  const prompt = `You are a fast content router. Decide the type based on the snippet.
+Title: "${(videoInfo.title||'').replace(/"/g,'\\"')}"
+Snippet:
+${firstChars(transcription, 1200)}
 
-Title: "${videoInfo.title}"
-TRANSCRIPT (first 1200 chars):
-${transcription.slice(0, 1200)}
-
-Return JSON like: {"contentType":"recipe|tutorial|story|tips|review|fitness|other"}`;
+Return ONLY JSON like {"contentType":"recipe|tutorial|story"}`;
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'gpt-4o-mini', temperature: 0.1, messages: [{ role: 'system', content: 'Only JSON.' }, { role: 'user', content: prompt }] })
+    body: JSON.stringify({ model: LLM_MODEL, temperature: 0.1, messages: [{ role: 'system', content: 'Only JSON.' }, { role: 'user', content: prompt }] })
   });
   const data = await resp.json();
   try { return JSON.parse(data.choices[0].message.content); } catch { return { contentType: 'story' }; }
 }
 
+// "Schema-lite" generator — no external libs needed, JSON-only
 async function generateSpecializedSummary(transcription, videoInfo, analysis) {
-  const prompt = `Make a helpful summary from this transcript. Keep it actionable. Return JSON.`;
+  const typeRaw = (analysis?.contentType || 'story').toLowerCase();
+  const type =
+    typeRaw.includes('recipe')   ? 'recipe'   :
+    typeRaw.includes('tutorial') ? 'tutorial' : 'story';
+
+  const SYSTEM = 'Return ONLY minified JSON. No commentary, no markdown, no backticks.';
+  const baseMeta = `Meta: {"title":"${(videoInfo.title||'').replace(/"/g,'\\"')}","language":"auto"}`;
+
+  let schema, task;
+  if (type === 'recipe') {
+    schema = `{"type":"recipe","title":string,"summary":string,"equipment":string[],"ingredients":[{"item":string,"amount":string|null,"notes":string|null}],"instructions":[{"step":number,"action":string,"time":string|null,"tips":string[]|null}],"tips":string[],"category":"recipe"}`;
+    task = `Make a structured RECIPE from the transcript. Use null where unknown. Steps must have 'step' numbers.`;
+  } else if (type === 'tutorial') {
+    schema = `{"type":"tutorial","title":string,"summary":string,"difficulty":"Easy"|"Medium"|"Hard"|null,"timeRequired":string|null,"prerequisites":string[],"materialsNeeded":[{"item":string,"required":boolean,"function":string|null,"alternatives":string[]|null}],"steps":[{"step":number,"title":string|null,"instruction":string,"timeEstimate":string|null,"successTips":string[]|null,"commonMistakes":string[]|null}],"troubleshooting":[{"problem":string,"solution":string}],"nextSteps":string[],"resources":string[],"category":"tutorial"}`;
+    task = `Make a structured TUTORIAL. Numbered 'steps' required. Keep fields concise; null when unknown.`;
+  } else {
+    schema = `{"type":"story","title":string,"summary":string,"transcript":{"verbatim":string,"readable":string},"keyTakeaways":string[],"quotes":string[],"category":"general"}`;
+    task = `Make a STORY summary with both verbatim and readable transcript (punctuated paragraphs).`;
+  }
+
+  const prompt = `${task}
+Schema: ${schema}
+${baseMeta}
+Transcript:
+${firstChars(transcription, 8000)}`;
+
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'gpt-4o-mini', temperature: 0.2, messages: [{ role: 'system', content: 'Only JSON.' }, { role: 'user', content: prompt + '\n' + transcription.slice(0, 6000) }] })
+    body: JSON.stringify({
+      model: LLM_MODEL,
+      temperature: 0.1,
+      messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }],
+      max_tokens: 2000
+    })
   });
+
   const data = await resp.json();
-  try { return JSON.parse(data.choices[0].message.content); } catch { return { title: videoInfo.title || 'Summary', summary: 'N/A' }; }
+  const txt = data?.choices?.[0]?.message?.content || '';
+  const first = txt.indexOf('{'), last = txt.lastIndexOf('}');
+  const slice = first >= 0 && last > first ? txt.slice(first, last + 1) : txt;
+  try { return JSON.parse(slice); }
+  catch { return { type, title: videoInfo.title || 'Summary', summary: 'Parsing failed', category: type === 'tutorial' ? 'tutorial' : type === 'recipe' ? 'recipe' : 'general' }; }
 }
 
-// ------------------------------------------------------------------------
+// Normalize for UI robustness — avoids white screens
+function normalizeForUI(summary, analysis) {
+  const s = summary || {};
+  const rawType = (analysis?.contentType || s.type || s.category || 'general').toLowerCase();
+  const normType =
+    rawType.includes('recipe')   ? 'recipe'   :
+    rawType.includes('tutorial') ? 'tutorial' : 'general';
 
+  s.type = s.type || normType;
+  s.category = s.category || normType;
+
+  if (s.type === 'tutorial') {
+    s.materialsNeeded = Array.isArray(s.materialsNeeded) ? s.materialsNeeded : [];
+    s.steps = Array.isArray(s.steps) ? s.steps : [];
+    s.troubleshooting = Array.isArray(s.troubleshooting) ? s.troubleshooting : [];
+    s.nextSteps = Array.isArray(s.nextSteps) ? s.nextSteps : [];
+    s.resources = Array.isArray(s.resources) ? s.resources : [];
+  }
+  if (s.type === 'recipe') {
+    s.equipment = Array.isArray(s.equipment) ? s.equipment : [];
+    s.ingredients = Array.isArray(s.ingredients) ? s.ingredients : [];
+    s.instructions = Array.isArray(s.instructions) ? s.instructions : [];
+    s.tips = Array.isArray(s.tips) ? s.tips : [];
+  }
+  if (s.type === 'story' || s.category === 'general') {
+    if (!s.transcript || typeof s.transcript !== 'object') {
+      s.transcript = { verbatim: '', readable: '' };
+    } else {
+      s.transcript.verbatim = s.transcript.verbatim || '';
+      s.transcript.readable = s.transcript.readable || '';
+    }
+    s.keyTakeaways = Array.isArray(s.keyTakeaways) ? s.keyTakeaways : [];
+    s.quotes = Array.isArray(s.quotes) ? s.quotes : [];
+  }
+  return s;
+}
+
+// ---------------- Main endpoint ----------------
 app.post('/process-video', async (req, res) => {
+  const started = Date.now();
   const { summaryId, videoUrl, platform } = req.body || {};
   if (!summaryId || !videoUrl || !platform) {
     return res.status(400).json({ success: false, error: 'Missing summaryId | videoUrl | platform' });
   }
 
-  const started = Date.now();
   try {
     await postProgress(summaryId, 'fetching_audio', 5, 'Resolving audio stream');
     const videoInfo = await extractVideoInfo(videoUrl);
@@ -209,7 +290,7 @@ app.post('/process-video', async (req, res) => {
     const chunks = await segmentAudio(wavSmall, 60);
     if (!chunks.length) throw new Error('No audio chunks produced');
 
-    // Early
+    // Early transcript
     await postProgress(summaryId, 'transcribing', 30, 'Transcribing first chunks');
     const earlyN = Math.min(2, chunks.length);
     const earlyParts = await Promise.all(chunks.slice(0, earlyN).map(transcribeChunk));
@@ -218,8 +299,8 @@ app.post('/process-video', async (req, res) => {
 
     // Route
     await postProgress(summaryId, 'classifying', 45);
-    const initialAnalysis = await analyzeContentType(earlyTranscript, videoInfo);
-    await postProgress(summaryId, 'classifying', 50, `Type: ${initialAnalysis.contentType}`);
+    const analysis = await analyzeContentType(earlyTranscript, videoInfo);
+    await postProgress(summaryId, 'classifying', 50, `Type: ${analysis.contentType}`);
 
     // Rest
     const restParts = await Promise.all(chunks.slice(earlyN).map(transcribeChunk));
@@ -228,17 +309,16 @@ app.post('/process-video', async (req, res) => {
 
     // Structure
     await postProgress(summaryId, 'structuring', 85);
-    const summary = await generateSpecializedSummary(fullTranscript, videoInfo, initialAnalysis);
+    let summary = await generateSpecializedSummary(fullTranscript, videoInfo, analysis);
+    summary = normalizeForUI(summary, analysis);
 
     await postProgress(summaryId, 'finalizing', 95);
 
     const processingMethod = 'audio-only+chunked';
-    const wordCount = (fullTranscript.trim().split(/\s+/).filter(Boolean).length);
+    const wordCount = fullTranscript.trim().split(/\s+/).filter(Boolean).length;
+    const data = { videoInfo, transcription: fullTranscript, summary, wordCount, processingMethod };
 
-    return res.status(200).json({
-      success: true,
-      data: { videoInfo, transcription: fullTranscript, summary, wordCount, processingMethod }
-    });
+    return res.status(200).json({ success: true, data });
   } catch (e) {
     console.error('process-video failed:', e);
     return res.status(500).json({ success: false, error: String(e?.message || e) });
