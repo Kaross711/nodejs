@@ -46,6 +46,39 @@ function detectPlatformFromUrl(url) {
   return 'unknown';
 }
 
+async function callOpenAIChat(body) {
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+
+  const txt = await resp.text(); // lees altijd als text
+  if (!resp.ok) {
+    // Duidelijke fout met status en snippet van body
+    throw new Error(`OpenAI ${resp.status}: ${txt.slice(0,300)}`);
+  }
+
+  let json;
+  try {
+    json = JSON.parse(txt);
+  } catch {
+    throw new Error(`OpenAI JSON parse failed: ${txt.slice(0,300)}`);
+  }
+
+  const content = json?.choices?.[0]?.message?.content ?? '';
+  return { raw: txt, json, content };
+}
+
+function parseJsonFromContent(content, fallback = {}) {
+  // Probeer content → JSON (met { ... } slice fallback)
+  const first = content.indexOf('{');
+  const last = content.lastIndexOf('}');
+  const payload = (first >= 0 && last > first) ? content.slice(first, last + 1) : content;
+  try { return JSON.parse(payload); } catch { return fallback; }
+}
+
+
 async function extractVideoInfo(url) {
   const platform = detectPlatformFromUrl(url);
   return new Promise((resolve) => {
@@ -173,13 +206,27 @@ Snippet:
 ${firstChars(transcription, 1200)}
 
 Return ONLY JSON like {"contentType":"recipe|tutorial|story"}`;
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: LLM_MODEL, temperature: 0.1, messages: [{ role: 'system', content: 'Only JSON.' }, { role: 'user', content: prompt }] })
-  });
-  const data = await resp.json();
-  try { return JSON.parse(data.choices[0].message.content); } catch { return { contentType: 'story' }; }
+
+  try {
+    const { content } = await callOpenAIChat({
+      model: LLM_MODEL,
+      temperature: 0.1,
+      messages: [
+        { role: 'system', content: 'Only JSON.' },
+        { role: 'user', content: prompt }
+      ]
+    });
+
+    const parsed = parseJsonFromContent(content, { contentType: 'story' });
+    // guard
+    if (!parsed.contentType) parsed.contentType = 'story';
+    return parsed;
+
+  } catch (e) {
+    console.error('analyzeContentType error:', e?.message || e);
+    // Fallback die nooit faalt
+    return { contentType: 'story' };
+  }
 }
 
 // "Schema-lite" generator — no external libs needed, JSON-only
@@ -210,23 +257,42 @@ ${baseMeta}
 Transcript:
 ${firstChars(transcription, 8000)}`;
 
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  try {
+    const { content } = await callOpenAIChat({
       model: LLM_MODEL,
       temperature: 0.1,
-      messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }],
-      max_tokens: 2000
-    })
-  });
+      max_tokens: 2000,
+      messages: [
+        { role: 'system', content: SYSTEM },
+        { role: 'user', content: prompt }
+      ]
+    });
 
-  const data = await resp.json();
-  const txt = data?.choices?.[0]?.message?.content || '';
-  const first = txt.indexOf('{'), last = txt.lastIndexOf('}');
-  const slice = first >= 0 && last > first ? txt.slice(first, last + 1) : txt;
-  try { return JSON.parse(slice); }
-  catch { return { type, title: videoInfo.title || 'Summary', summary: 'Parsing failed', category: type === 'tutorial' ? 'tutorial' : type === 'recipe' ? 'recipe' : 'general' }; }
+    // Parse content → JSON
+    let summary = parseJsonFromContent(content, null);
+
+    // Als parsing faalt, doe een robuuste fallback
+    if (!summary || typeof summary !== 'object') {
+      summary = {
+        type,
+        category: type === 'tutorial' ? 'tutorial' : type === 'recipe' ? 'recipe' : 'general',
+        title: videoInfo.title || 'Summary',
+        summary: 'Model output parsing failed; using fallback.',
+      };
+    }
+
+    return summary;
+
+  } catch (e) {
+    console.error('generateSpecializedSummary error:', e?.message || e);
+    // Ultime fallback zodat UI nooit crasht
+    return {
+      type,
+      category: type === 'tutorial' ? 'tutorial' : type === 'recipe' ? 'recipe' : 'general',
+      title: videoInfo.title || 'Summary',
+      summary: 'LLM call failed; minimal summary returned.',
+    };
+  }
 }
 
 // Normalize for UI robustness — avoids white screens
