@@ -1,7 +1,3 @@
-// app.js — Railway worker (CommonJS) with audio-only + chunked ASR + progress callbacks
-// Includes "schema-lite" summaries and normalization to avoid UI crashes on Tutorials/Recipes.
-// Drop this in your Railway worker repo as app.js and redeploy.
-
 const express = require('express');
 const cors = require('cors');
 const { exec } = require('child_process');
