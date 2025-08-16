@@ -52,31 +52,18 @@ async function callOpenAIChat(body) {
     headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-
-  const txt = await resp.text(); // lees altijd als text
-  if (!resp.ok) {
-    // Duidelijke fout met status en snippet van body
-    throw new Error(`OpenAI ${resp.status}: ${txt.slice(0,300)}`);
-  }
-
-  let json;
-  try {
-    json = JSON.parse(txt);
-  } catch {
-    throw new Error(`OpenAI JSON parse failed: ${txt.slice(0,300)}`);
-  }
-
+  const txt = await resp.text();
+  if (!resp.ok) throw new Error(`OpenAI ${resp.status}: ${txt.slice(0,300)}`);
+  let json; try { json = JSON.parse(txt); } catch { throw new Error(`OpenAI JSON parse failed: ${txt.slice(0,300)}`); }
   const content = json?.choices?.[0]?.message?.content ?? '';
-  return { raw: txt, json, content };
+  return { json, content, raw: txt };
 }
-
 function parseJsonFromContent(content, fallback = {}) {
-  // Probeer content → JSON (met { ... } slice fallback)
-  const first = content.indexOf('{');
-  const last = content.lastIndexOf('}');
+  const first = content.indexOf('{'), last = content.lastIndexOf('}');
   const payload = (first >= 0 && last > first) ? content.slice(first, last + 1) : content;
   try { return JSON.parse(payload); } catch { return fallback; }
 }
+
 
 
 async function extractVideoInfo(url) {
@@ -177,6 +164,159 @@ async function segmentAudio(wavPath, segmentSec = 60) {
   return fs.readdirSync(dir).filter(f => f.startsWith('part_')).map(f => path.join(dir, f)).sort();
 }
 
+async function synthesizeRecipe(transcript, videoInfo) {
+  const prompt = `
+Create a structured RECIPE object from the transcript. Be concise and faithful to the audio (no inventions).
+Use null when unknown. If ingredients are implied, infer minimal sane entries.
+
+SCHEMA:
+{
+  "type": "recipe",
+  "title": string,
+  "intro": string,                // short sentence on what dish it is
+  "ingredients": string[],        // plain list
+  "steps": [{"step": number, "instruction": string}], // numbered 1..N
+  "notes": string[],              // tips/warnings/variations; can be []
+  "category": "recipe"
+}
+
+Title: "${(videoInfo.title||'').replace(/"/g,'\\"')}"
+TRANSCRIPT:
+${firstChars(transcript, 8000)}
+  `.trim();
+
+  try {
+    const { content } = await callOpenAIChat({
+      model: LLM_MODEL,
+      temperature: 0.1,
+      messages: [
+        { role: 'system', content: 'Return ONLY valid JSON matching the schema.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 1600
+    });
+
+    let obj = parseJsonFromContent(content, null);
+    if (!obj || typeof obj !== 'object') obj = {};
+    // Normalize
+    obj.type = 'recipe';
+    obj.category = 'recipe';
+    obj.title = obj.title || (videoInfo.title || 'Recipe');
+    obj.intro = obj.intro || '';
+    obj.ingredients = Array.isArray(obj.ingredients) ? obj.ingredients : [];
+    obj.steps = (Array.isArray(obj.steps) ? obj.steps : []).map((s, i) => ({
+      step: Number(s?.step ?? i + 1),
+      instruction: (s?.instruction || s?.action || String(s || '')).toString()
+    })).filter(s => s.instruction);
+    if (!obj.steps.length) obj.steps = [{ step: 1, instruction: 'No clear steps detected.' }];
+    obj.notes = Array.isArray(obj.notes) ? obj.notes : [];
+    return obj;
+  } catch (e) {
+    console.error('synthesizeRecipe error:', e?.message || e);
+    return {
+      type: 'recipe',
+      category: 'recipe',
+      title: videoInfo.title || 'Recipe',
+      intro: '',
+      ingredients: [],
+      steps: [{ step: 1, instruction: 'Summary generation failed.' }],
+      notes: []
+    };
+  }
+}
+
+async function synthesizeTutorial(transcript, videoInfo) {
+  const prompt = `
+Create a structured TUTORIAL object from the transcript. Be concise and faithful to the audio (no inventions).
+
+SCHEMA:
+{
+  "type": "tutorial",
+  "title": string,
+  "intro": string,                 // what this tutorial covers
+  "materials": string[],           // tools/requirements; can be []
+  "steps": [{"step": number, "instruction": string}], // numbered 1..N
+  "tips": string[],                // optional
+  "warnings": string[],            // optional
+  "category": "tutorial"
+}
+
+Title: "${(videoInfo.title||'').replace(/"/g,'\\"')}"
+TRANSCRIPT:
+${firstChars(transcript, 8000)}
+  `.trim();
+
+  try {
+    const { content } = await callOpenAIChat({
+      model: LLM_MODEL,
+      temperature: 0.1,
+      messages: [
+        { role: 'system', content: 'Return ONLY valid JSON matching the schema.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 1600
+    });
+
+    let obj = parseJsonFromContent(content, null);
+    if (!obj || typeof obj !== 'object') obj = {};
+    // Normalize
+    obj.type = 'tutorial';
+    obj.category = 'tutorial';
+    obj.title = obj.title || (videoInfo.title || 'Tutorial');
+    obj.intro = obj.intro || '';
+    obj.materials = Array.isArray(obj.materials) ? obj.materials : (Array.isArray(obj.materialsNeeded) ? obj.materialsNeeded : []);
+    obj.steps = (Array.isArray(obj.steps) ? obj.steps : []).map((s, i) => ({
+      step: Number(s?.step ?? i + 1),
+      instruction: (s?.instruction || s?.title || String(s || '')).toString()
+    })).filter(s => s.instruction);
+    if (!obj.steps.length) obj.steps = [{ step: 1, instruction: 'No clear steps detected.' }];
+    obj.tips = Array.isArray(obj.tips) ? obj.tips : [];
+    obj.warnings = Array.isArray(obj.warnings) ? obj.warnings : [];
+    return obj;
+  } catch (e) {
+    console.error('synthesizeTutorial error:', e?.message || e);
+    return {
+      type: 'tutorial',
+      category: 'tutorial',
+      title: videoInfo.title || 'Tutorial',
+      intro: '',
+      materials: [],
+      steps: [{ step: 1, instruction: 'Summary generation failed.' }],
+      tips: [],
+      warnings: []
+    };
+  }
+}
+
+
+async function formatTranscript(verbatim) {
+  if (!verbatim || typeof verbatim !== 'string') {
+    return { verbatim: '', readable: '' };
+  }
+  try {
+    const { content } = await callOpenAIChat({
+      model: LLM_MODEL,
+      temperature: 0.1,
+      messages: [
+        { role: 'system', content: 'Return ONLY valid JSON.' },
+        { role: 'user', content:
+`Punctuate and paragraph the transcript into readable paragraphs without adding or removing content.
+Return: {"readable": string}
+
+TRANSCRIPT:
+${firstChars(verbatim, 12000)}`
+        }
+      ],
+      max_tokens: 800
+    });
+    const obj = parseJsonFromContent(content, { readable: verbatim });
+    return { verbatim, readable: obj.readable || verbatim };
+  } catch (e) {
+    console.error('formatTranscript failed:', e?.message || e);
+    return { verbatim, readable: verbatim };
+  }
+}
+
 async function transcribeChunk(filePath) {
   const formData = new FormData();
   formData.append('file', fs.createReadStream(filePath));
@@ -200,34 +340,38 @@ function firstChars(t, n) {
 }
 
 async function analyzeContentType(transcription, videoInfo) {
-  const prompt = `You are a fast content router. Decide the type based on the snippet.
+  const prompt = `
+You are a routing model. Decide ONLY between: "recipe", "tutorial", or "story".
+- "recipe": ingredients + cooking/prep context.
+- "tutorial": how-to/guide (tools/requirements + steps) that is NOT cooking.
+- "story": someone telling a story, opinions, narration without actionable steps.
+
+Return strict JSON with keys:
+{"contentType":"recipe|tutorial|story","confidence":0-1,"reason":"short reason"}
+
 Title: "${(videoInfo.title||'').replace(/"/g,'\\"')}"
 Snippet:
-${firstChars(transcription, 1200)}
-
-Return ONLY JSON like {"contentType":"recipe|tutorial|story"}`;
+${firstChars(transcription, 1400)}
+  `.trim();
 
   try {
     const { content } = await callOpenAIChat({
       model: LLM_MODEL,
-      temperature: 0.1,
+      temperature: 0.0,
       messages: [
-        { role: 'system', content: 'Only JSON.' },
+        { role: 'system', content: 'Return ONLY valid JSON.' },
         { role: 'user', content: prompt }
       ]
     });
-
-    const parsed = parseJsonFromContent(content, { contentType: 'story' });
-    // guard
+    const parsed = parseJsonFromContent(content, { contentType: 'story', confidence: 0.4, reason: 'fallback' });
     if (!parsed.contentType) parsed.contentType = 'story';
     return parsed;
-
   } catch (e) {
     console.error('analyzeContentType error:', e?.message || e);
-    // Fallback die nooit faalt
-    return { contentType: 'story' };
+    return { contentType: 'story', confidence: 0.0, reason: 'error-fallback' };
   }
 }
+
 
 // "Schema-lite" generator — no external libs needed, JSON-only
 async function generateSpecializedSummary(transcription, videoInfo, analysis) {
@@ -236,64 +380,34 @@ async function generateSpecializedSummary(transcription, videoInfo, analysis) {
     typeRaw.includes('recipe')   ? 'recipe'   :
     typeRaw.includes('tutorial') ? 'tutorial' : 'story';
 
-  const SYSTEM = 'Return ONLY minified JSON. No commentary, no markdown, no backticks.';
-  const baseMeta = `Meta: {"title":"${(videoInfo.title||'').replace(/"/g,'\\"')}","language":"auto"}`;
-
-  let schema, task;
-  if (type === 'recipe') {
-    schema = `{"type":"recipe","title":string,"summary":string,"equipment":string[],"ingredients":[{"item":string,"amount":string|null,"notes":string|null}],"instructions":[{"step":number,"action":string,"time":string|null,"tips":string[]|null}],"tips":string[],"category":"recipe"}`;
-    task = `Make a structured RECIPE from the transcript. Use null where unknown. Steps must have 'step' numbers.`;
-  } else if (type === 'tutorial') {
-    schema = `{"type":"tutorial","title":string,"summary":string,"difficulty":"Easy"|"Medium"|"Hard"|null,"timeRequired":string|null,"prerequisites":string[],"materialsNeeded":[{"item":string,"required":boolean,"function":string|null,"alternatives":string[]|null}],"steps":[{"step":number,"title":string|null,"instruction":string,"timeEstimate":string|null,"successTips":string[]|null,"commonMistakes":string[]|null}],"troubleshooting":[{"problem":string,"solution":string}],"nextSteps":string[],"resources":string[],"category":"tutorial"}`;
-    task = `Make a structured TUTORIAL. Numbered 'steps' required. Keep fields concise; null when unknown.`;
-  } else {
-    schema = `{"type":"story","title":string,"summary":string,"transcript":{"verbatim":string,"readable":string},"keyTakeaways":string[],"quotes":string[],"category":"general"}`;
-    task = `Make a STORY summary with both verbatim and readable transcript (punctuated paragraphs).`;
-  }
-
-  const prompt = `${task}
-Schema: ${schema}
-${baseMeta}
-Transcript:
-${firstChars(transcription, 8000)}`;
-
   try {
-    const { content } = await callOpenAIChat({
-      model: LLM_MODEL,
-      temperature: 0.1,
-      max_tokens: 2000,
-      messages: [
-        { role: 'system', content: SYSTEM },
-        { role: 'user', content: prompt }
-      ]
-    });
-
-    // Parse content → JSON
-    let summary = parseJsonFromContent(content, null);
-
-    // Als parsing faalt, doe een robuuste fallback
-    if (!summary || typeof summary !== 'object') {
-      summary = {
-        type,
-        category: type === 'tutorial' ? 'tutorial' : type === 'recipe' ? 'recipe' : 'general',
-        title: videoInfo.title || 'Summary',
-        summary: 'Model output parsing failed; using fallback.',
+    if (type === 'story') {
+      const t = await formatTranscript(transcription);
+      return {
+        type: 'story',
+        category: 'general',
+        title: videoInfo.title || 'Story',
+        transcript: t
       };
     }
-
-    return summary;
+    if (type === 'recipe') {
+      return await synthesizeRecipe(transcription, videoInfo);
+    }
+    // default: tutorial
+    return await synthesizeTutorial(transcription, videoInfo);
 
   } catch (e) {
     console.error('generateSpecializedSummary error:', e?.message || e);
-    // Ultime fallback zodat UI nooit crasht
+    // Ultime fallback (maar nog steeds zichtbaar/bruikbaar)
     return {
       type,
       category: type === 'tutorial' ? 'tutorial' : type === 'recipe' ? 'recipe' : 'general',
       title: videoInfo.title || 'Summary',
-      summary: 'LLM call failed; minimal summary returned.',
+      steps: [{ step: 1, instruction: 'Summary failed. Please retry.' }]
     };
   }
 }
+
 
 // Normalize for UI robustness — avoids white screens
 function normalizeForUI(summary, analysis) {
@@ -306,19 +420,16 @@ function normalizeForUI(summary, analysis) {
   s.type = s.type || normType;
   s.category = s.category || normType;
 
-  if (s.type === 'tutorial') {
-    s.materialsNeeded = Array.isArray(s.materialsNeeded) ? s.materialsNeeded : [];
-    s.steps = Array.isArray(s.steps) ? s.steps : [];
-    s.troubleshooting = Array.isArray(s.troubleshooting) ? s.troubleshooting : [];
-    s.nextSteps = Array.isArray(s.nextSteps) ? s.nextSteps : [];
-    s.resources = Array.isArray(s.resources) ? s.resources : [];
-  }
-  if (s.type === 'recipe') {
-    s.equipment = Array.isArray(s.equipment) ? s.equipment : [];
-    s.ingredients = Array.isArray(s.ingredients) ? s.ingredients : [];
-    s.instructions = Array.isArray(s.instructions) ? s.instructions : [];
-    s.tips = Array.isArray(s.tips) ? s.tips : [];
-  }
+// in normalizeForUI(...) – extra guards
+if (s.type === 'tutorial') {
+  s.intro = typeof s.intro === 'string' ? s.intro : '';
+  s.materials = Array.isArray(s.materials) ? s.materials : (Array.isArray(s.materialsNeeded) ? s.materialsNeeded : []);
+}
+if (s.type === 'recipe') {
+  s.intro = typeof s.intro === 'string' ? s.intro : '';
+  s.notes = Array.isArray(s.notes) ? s.notes : [];
+}
+
   if (s.type === 'story' || s.category === 'general') {
     if (!s.transcript || typeof s.transcript !== 'object') {
       s.transcript = { verbatim: '', readable: '' };
